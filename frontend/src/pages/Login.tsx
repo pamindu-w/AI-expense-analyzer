@@ -32,7 +32,7 @@ export default function Login() {
         setError(res.detail)
       } else if (res.access_token) {
         localStorage.setItem('token', res.access_token)
-        navigate('/')
+        navigate('/dashboard')
       }
     } catch {
       setError('Something went wrong. Please try again.')
