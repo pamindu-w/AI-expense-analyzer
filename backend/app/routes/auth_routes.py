@@ -1,111 +1,62 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
-from jose import jwt
-from datetime import datetime, timedelta
 
-from app.database import SessionLocal
+from app.database import get_db
 from app.models.user import User
 from app.schemas.user_schema import UserCreate, UserLogin
 from app.utils.security import (
     hash_password,
     verify_password,
+    create_access_token,
+    decode_access_token,
 )
 
 router = APIRouter()
 
-SECRET_KEY = "SECRET123"
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
-
-def get_db():
-    db = SessionLocal()
-
-    try:
-        yield db
-    finally:
-        db.close()
-
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-
-    expire = datetime.utcnow() + timedelta(
-        minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-    )
-
-    to_encode.update({"exp": expire})
-
-    return jwt.encode(
-        to_encode,
-        SECRET_KEY,
-        algorithm=ALGORITHM,
-    )
-
-
-@router.post("/signup")
-def signup(
-    user: UserCreate,
-    db: Session = Depends(get_db),
-):
-    existing_user = db.query(User).filter(
-        User.email == user.email
-    ).first()
-
-    if existing_user:
-        raise HTTPException(
-            status_code=400,
-            detail="Email already exists",
-        )
+@router.post("/signup", status_code=201)
+def signup(user: UserCreate, db: Session = Depends(get_db)):
+    existing = db.query(User).filter(User.email == user.email).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="Email already registered")
 
     new_user = User(
         username=user.username,
         email=user.email,
-        hashed_password=hash_password(
-            user.password
-        ),
+        hashed_password=hash_password(user.password),
     )
-
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
-
-    return {
-        "message": "User created successfully"
-    }
+    return {"message": "Account created successfully"}
 
 
 @router.post("/login")
-def login(
-    user: UserLogin,
+def login(user: UserLogin, db: Session = Depends(get_db)):
+    db_user = db.query(User).filter(User.email == user.email).first()
+    if not db_user or not verify_password(user.password, db_user.hashed_password):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    token = create_access_token({"sub": db_user.email})
+    return {"access_token": token, "token_type": "bearer"}
+
+
+@router.get("/validate")
+def validate_token(
+    authorization: str | None = Header(None),
     db: Session = Depends(get_db),
 ):
-    db_user = db.query(User).filter(
-        User.email == user.email
-    ).first()
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or invalid Authorization header")
 
-    if not db_user:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid credentials",
-        )
+    token = authorization.removeprefix("Bearer ").strip()
+    payload = decode_access_token(token)
 
-    valid_password = verify_password(
-        user.password,
-        db_user.hashed_password,
-    )
+    if not payload or "sub" not in payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    if not valid_password:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid credentials",
-        )
+    user = db.query(User).filter(User.email == payload["sub"]).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
 
-    token = create_access_token(
-        {"sub": db_user.email}
-    )
-
-    return {
-        "access_token": token,
-        "token_type": "bearer",
-    }
+    return {"valid": True, "email": user.email, "username": user.username}
