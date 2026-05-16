@@ -4,6 +4,8 @@ from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
 import os
 
+
+
 # Load environment variables (DATABASE_URL) before importing Prisma
 # Load .env from the backend folder so DATABASE_URL is available
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
@@ -13,8 +15,12 @@ from prisma import Prisma
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+from app.models.user import User
+from app.models.expense import Expense
 
 app = FastAPI()
+
+
 
 # =========================
 # CORS
@@ -22,12 +28,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:8000", "http://127.0.0.1:8000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -95,9 +96,6 @@ async def shutdown():
     await db.disconnect()
 
 
-
-
-
 # =========================
 # SCHEMAS
 # =========================
@@ -117,15 +115,6 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
-
-
-# =========================
-# ROOT
-# =========================
-
-@app.get("/")
-async def root():
-    return {"message": "Backend connected successfully"}
 
 
 # =========================
@@ -246,12 +235,43 @@ async def validate_user(authorization: str | None = Header(None)):
 
 # =========================
 # EXPENSE ROUTES
+# =========================
+
+def get_current_user(authorization: str | None = Header(None)):
+    """Extract and validate user from authorization header"""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid Authorization header",
+        )
+
+    token = authorization.removeprefix("Bearer ").strip()
+    payload = decode_access_token(token)
+
+    if not payload or "sub" not in payload:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid token",
+        )
+
+    return payload["sub"]
+
 
 @app.get("/expenses")
-async def get_expenses():
+async def get_expenses(authorization: str | None = Header(None)):
+    user_email = get_current_user(authorization)
 
-    expenses = await db.expense.find_many(
-        order={"created_at": "desc"}
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Use raw SQL to bypass Prisma relation issues
+    expenses = await db.query_raw(
+        'SELECT * FROM "Expense" WHERE user_id = $1 ORDER BY created_at DESC',
+        user.id
     )
 
     return expenses
@@ -259,79 +279,109 @@ async def get_expenses():
 
 @app.post("/expenses")
 async def create_expense(
-    expense: ExpenseCreate
+    expense: ExpenseCreate,
+    authorization: str | None = Header(None)
 ):
+    user_email = get_current_user(authorization)
 
     if expense.amount <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Amount must be greater than 0"
-        )
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
 
-    new_expense = await db.expense.create(
-        data={
-            "title": expense.title,
-            "amount": expense.amount,
-            "category": expense.category,
-        }
+    user = await db.user.find_unique(
+        where={"email": user_email}
     )
 
-    return new_expense
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Use raw SQL to bypass Prisma relation issues
+    result = await db.query_raw(
+        'INSERT INTO "Expense" (title, amount, category, user_id, created_at) VALUES ($1, $2, $3, $4, NOW()) RETURNING *',
+        expense.title,
+        expense.amount,
+        expense.category,
+        user.id
+    )
+
+    return result[0] if result else {}
 
 
 @app.delete("/expenses/{expense_id}")
 async def delete_expense(
-    expense_id: int
+    expense_id: int,
+    authorization: str | None = Header(None)
 ):
-
-    existing_expense = await db.expense.find_unique(
-        where={"id": expense_id}
+    """Delete an expense (only if it belongs to the logged-in user)"""
+ 
+    user_email = get_current_user(authorization)
+ 
+    user = await db.user.find_unique(
+        where={"email": user_email}
     )
-
-    if not existing_expense:
-        raise HTTPException(
-            status_code=404,
-            detail="Expense not found"
-        )
-
-    await db.expense.delete(
-        where={"id": expense_id}
+ 
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+ 
+    # Fetch expense via raw SQL
+    existing = await db.query_raw(
+        'SELECT * FROM "Expense" WHERE id = $1',
+        expense_id
     )
-
-    return {
-        "message": "Expense deleted successfully"
-    }
+ 
+    if not existing:
+        raise HTTPException(status_code=404, detail="Expense not found")
+ 
+    # Verify ownership
+    if existing[0]["user_id"] != user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized: This expense does not belong to you")
+ 
+    await db.execute_raw(
+        'DELETE FROM "Expense" WHERE id = $1',
+        expense_id
+    )
+ 
+    return {"message": "Expense deleted successfully"}
 
 
 @app.put("/expenses/{expense_id}")
 async def update_expense(
     expense_id: int,
-    expense: ExpenseCreate
+    expense: ExpenseCreate,
+    authorization: str | None = Header(None)
 ):
+    """Update an expense (only if it belongs to the logged-in user)"""
 
-    existing_expense = await db.expense.find_unique(
-        where={"id": expense_id}
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
     )
 
-    if not existing_expense:
-        raise HTTPException(
-            status_code=404,
-            detail="Expense not found"
-        )
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    # Fetch expense via raw SQL
+    existing = await db.query_raw(
+        'SELECT * FROM "Expense" WHERE id = $1',
+        expense_id
+    )
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Expense not found")
+
+    # Verify ownership
+    if existing[0]["user_id"] != user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized: This expense does not belong to you")
 
     if expense.amount <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Amount must be greater than 0"
-        )
+        raise HTTPException(status_code=400, detail="Amount must be greater than 0")
 
-    updated_expense = await db.expense.update(
-        where={"id": expense_id},
-        data={
-            "title": expense.title,
-            "amount": expense.amount,
-            "category": expense.category,
-        }
+    updated = await db.query_raw(
+        'UPDATE "Expense" SET title = $1, amount = $2, category = $3 WHERE id = $4 RETURNING *',
+        expense.title,
+        expense.amount,
+        expense.category,
+        expense_id
     )
 
-    return updated_expense
+    return updated[0] if updated else {}
