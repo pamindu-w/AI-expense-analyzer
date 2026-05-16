@@ -31,7 +31,7 @@ export default function Login() {
       if (res.detail) {
         setError(res.detail)
       } else if (res.access_token) {
-        localStorage.setItem('token', res.access_token)
+        localStorage.setItem('access_token', res.access_token)
         navigate('/dashboard')
       }
     } catch {

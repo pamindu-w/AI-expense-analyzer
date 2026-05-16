@@ -168,7 +168,7 @@ function Expenses() {
         <Navbar />
 
         <div className="exp-content">
-          <Link to="/" className="back-link">← Dashboard</Link>
+          <Link to="/dashboard" className="back-link">← Dashboard</Link>
 
           <div className="exp-header">
             <div>
