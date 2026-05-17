@@ -9,6 +9,10 @@ from app.models.user import User
 from app.schemas.expense_schema import ExpenseCreate
 from app.dependencies import get_current_user
 
+from app.services.ai_service import (
+    generate_expense_insights
+)
+
 router = APIRouter()
 
 
@@ -143,3 +147,21 @@ def get_monthly_summary(
         })
 
     return summary
+
+@router.get("/ai-insights")
+def ai_insights(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+
+    expenses = db.query(Expense).filter(
+        Expense.user_id == current_user.id
+    ).all()
+
+    insights = generate_expense_insights(
+        expenses
+    )
+
+    return {
+        "insights": insights
+    }
