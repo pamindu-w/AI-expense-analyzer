@@ -94,6 +94,12 @@ function Navbar() {
           <Link to="/expenses" className={`nav-link${pathname === '/expenses' ? ' active' : ''}`}>
             Expenses
           </Link>
+          <Link to="/budgets" className={`nav-link${pathname === '/budgets' ? ' active' : ''}`}>
+            Budgets
+          </Link>
+          <Link to="/recurring-expenses" className={`nav-link${pathname === '/recurring-expenses' ? ' active' : ''}`}>
+            Recurring Expenses
+          </Link>
         </div>
       </nav>
     </>

@@ -6,6 +6,7 @@ type Expense = {
   title: string
   amount: number
   category: string
+  created_at: string
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -19,6 +20,61 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const CATEGORIES = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Other']
 
+function formatExpenseDate(dateString: string) {
+  const date = new Date(dateString)
+  return date.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  })
+}
+
+function groupExpensesByMonth(expenses: Expense[]) {
+  const groups: Record<
+    string,
+    {
+      label: string
+      items: Expense[]
+      total: number
+    }
+  > = {}
+
+  expenses.forEach((expense) => {
+    const date = new Date(expense.created_at)
+    const key = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+    const label = date.toLocaleDateString('en-US', {
+      month: 'long',
+      year: 'numeric',
+    })
+
+    if (!groups[key]) {
+      groups[key] = {
+        label,
+        items: [],
+        total: 0,
+      }
+    }
+
+    groups[key].items.push(expense)
+    groups[key].total += expense.amount
+  })
+
+  return Object.values(groups)
+    .map((group) => ({
+      ...group,
+      items: group.items.sort(
+        (a, b) =>
+          new Date(b.created_at).getTime() -
+          new Date(a.created_at).getTime(),
+      ),
+    }))
+    .sort(
+      (a, b) =>
+        new Date(b.items[0].created_at).getTime() -
+        new Date(a.items[0].created_at).getTime(),
+    )
+}
+
 function ExpenseList() {
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -28,14 +84,25 @@ function ExpenseList() {
   useEffect(() => { loadExpenses() }, [])
 
   const loadExpenses = async () => {
-    const data = await getExpenses()
-    setExpenses(data)
+    try {
+      const data = await getExpenses()
+      setExpenses(data)
+    } catch (err) {
+      console.warn('Unable to load expenses:', err)
+      setExpenses([])
+    }
   }
+
+  const groupedExpenses = groupExpensesByMonth(expenses)
 
   const handleDelete = async (id: number) => {
     setDeletingId(id)
-    await deleteExpense(id)
-    setExpenses(expenses.filter((e) => e.id !== id))
+    try {
+      await deleteExpense(id)
+      setExpenses(expenses.filter((e) => e.id !== id))
+    } catch (err) {
+      console.warn('Failed to delete expense:', err)
+    }
     setDeletingId(null)
   }
 
@@ -49,13 +116,17 @@ function ExpenseList() {
   }
 
   const handleUpdate = async (id: number) => {
-    await updateExpense(id, {
-      title: editForm.title,
-      amount: Number(editForm.amount),
-      category: editForm.category,
-    })
-    setEditingId(null)
-    loadExpenses()
+    try {
+      await updateExpense(id, {
+        title: editForm.title,
+        amount: Number(editForm.amount),
+        category: editForm.category,
+      })
+      setEditingId(null)
+      loadExpenses()
+    } catch (err) {
+      console.warn('Failed to update expense:', err)
+    }
   }
 
   return (
@@ -102,6 +173,30 @@ function ExpenseList() {
         }
         .el-table tbody tr:last-child { border-bottom: none; }
         .el-table tbody tr:hover { background: rgba(255,255,255,0.02); }
+
+        .month-section {
+          margin-bottom: 2rem;
+        }
+
+        .month-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: baseline;
+          margin-bottom: 1rem;
+          gap: 1rem;
+        }
+
+        .month-title {
+          font-size: 1rem;
+          color: #fff;
+          margin: 0;
+        }
+
+        .month-summary {
+          font-size: 0.85rem;
+          color: rgba(232,232,240,0.55);
+          margin: 0.25rem 0 0;
+        }
 
         .el-table td {
           padding: 0.9rem 0.8rem;
@@ -235,30 +330,43 @@ function ExpenseList() {
       `}</style>
 
       <div className="el-wrap">
-        {expenses.length === 0 ? (
+        {groupedExpenses.length === 0 ? (
           <div className="el-empty">
             <span className="el-empty-icon">◎</span>
             <span>No expenses recorded yet</span>
           </div>
         ) : (
-          <table className="el-table">
-            <thead>
-              <tr>
-                <th>Title</th>
-                <th>Amount</th>
-                <th>Category</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {expenses.map((expense) => {
-                const color = CATEGORY_COLORS[expense.category] || '#a78bfa'
-                const isEditing = editingId === expense.id
+          groupedExpenses.map((group) => (
+            <div className="month-section" key={group.label}>
+              <div className="month-header">
+                <div>
+                  <h2 className="month-title">{group.label}</h2>
+                  <p className="month-summary">
+                    {group.items.length} transactions · ${group.total.toFixed(2)}
+                  </p>
+                </div>
+              </div>
 
-                return (
-                  <tr key={expense.id}>
+              <table className="el-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Title</th>
+                    <th>Amount</th>
+                    <th>Category</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {group.items.map((expense) => {
+                    const color = CATEGORY_COLORS[expense.category] || '#a78bfa'
+                    const isEditing = editingId === expense.id
+
+                    return (
+                      <tr key={expense.id}>
                     {isEditing ? (
                       <>
+                        <td>{formatExpenseDate(expense.created_at)}</td>
                         <td>
                           <input
                             className="el-input"
@@ -295,6 +403,7 @@ function ExpenseList() {
                       </>
                     ) : (
                       <>
+                        <td>{formatExpenseDate(expense.created_at)}</td>
                         <td className="el-title">{expense.title}</td>
                         <td className="el-amount">${expense.amount.toFixed(2)}</td>
                         <td>
@@ -329,6 +438,8 @@ function ExpenseList() {
               })}
             </tbody>
           </table>
+            </div>
+          ))
         )}
       </div>
     </>

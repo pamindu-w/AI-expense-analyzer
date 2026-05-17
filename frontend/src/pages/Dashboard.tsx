@@ -10,7 +10,7 @@ import {
   CartesianGrid,
 } from 'recharts'
 
-import { getExpenses } from '../services/api'
+import { getExpenses, getRecurringExpenses } from '../services/api'
 import Navbar from '../components/Navbar'
 import ExpenseChart from '../components/ExpenseChart'
 import ExpenseList from '../components/ExpenseList'
@@ -21,6 +21,117 @@ type Expense = {
   amount: number
   category: string
   created_at: string
+}
+
+type RecurringExpense = {
+  id: number
+  title: string
+  amount: number
+  category: string
+  frequency: string
+  next_run: string
+  active: boolean
+  deactivated_at?: string
+  created_at: string
+}
+
+function getWeekBounds(date: Date) {
+  const dayOfWeek = date.getDay()
+  const start = new Date(date)
+  start.setDate(date.getDate() - dayOfWeek)
+  start.setHours(0, 0, 0, 0)
+
+  const end = new Date(start)
+  end.setDate(start.getDate() + 6)
+  end.setHours(23, 59, 59, 999)
+
+  return { start, end }
+}
+
+function countRecurringInMonth(
+  recurring: RecurringExpense,
+  currentMonth: Date,
+): number {
+  const nextRun = new Date(recurring.next_run)
+  const monthStart = new Date(
+    currentMonth.getFullYear(),
+    currentMonth.getMonth(),
+    1,
+  )
+  const monthEnd = new Date(
+    currentMonth.getFullYear(),
+    currentMonth.getMonth() + 1,
+    0,
+  )
+
+  const isScheduledThisMonth =
+    nextRun >= monthStart && nextRun <= monthEnd
+
+  const deactivatedAt =
+    recurring.deactivated_at &&
+    new Date(recurring.deactivated_at)
+
+  if (!recurring.active && !deactivatedAt) {
+    return 0
+  }
+
+  if (recurring.frequency === 'monthly') {
+    if (deactivatedAt) {
+      if (
+        deactivatedAt.getFullYear() ===
+          currentMonth.getFullYear() &&
+        deactivatedAt.getMonth() ===
+          currentMonth.getMonth()
+      ) {
+        return isScheduledThisMonth ? 1 : 0
+      }
+      return 0
+    }
+
+    return isScheduledThisMonth ? 1 : 0
+  }
+
+  if (recurring.frequency === 'weekly') {
+    if (deactivatedAt) {
+      if (
+        deactivatedAt.getFullYear() !==
+          currentMonth.getFullYear() ||
+        deactivatedAt.getMonth() !==
+          currentMonth.getMonth()
+      ) {
+        return 0
+      }
+
+      const weekBounds = getWeekBounds(deactivatedAt)
+      let count = 0
+      let current = new Date(nextRun)
+      while (current <= weekBounds.end) {
+        if (current >= weekBounds.start) {
+          count++
+        }
+        current = new Date(
+          current.getTime() +
+            7 * 24 * 60 * 60 * 1000,
+        )
+      }
+      return count
+    }
+
+    let count = 0
+    let current = new Date(nextRun)
+    while (current <= monthEnd) {
+      if (current >= monthStart) {
+        count++
+      }
+      current = new Date(
+        current.getTime() +
+          7 * 24 * 60 * 60 * 1000,
+      )
+    }
+    return count
+  }
+
+  return 0
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -37,6 +148,13 @@ function getGreeting(): string {
   if (hour < 12) return 'Good Morning'
   if (hour < 16) return 'Good Afternoon'
   return 'Good Evening'
+}
+
+function getCurrentMonthLabel(): string {
+  const month = new Date().toLocaleString('default', {
+    month: 'long',
+  })
+  return `MONTH - ${month.toUpperCase()}`
 }
 
 function StatCard({
@@ -64,8 +182,12 @@ function StatCard({
 
 export default function Dashboard() {
   const [expenses, setExpenses] = useState<Expense[]>([])
+  const [recurringExpenses, setRecurringExpenses] = useState<RecurringExpense[]>([])
   const [loading, setLoading] = useState(true)
   const [username, setUsername] = useState<string>('')
+  // const [aiInsights, setAiInsights] = useState('')
+  // const [aiLoading, setAiLoading] = useState(true)
+  const [budgetAlerts, setBudgetAlerts] = useState<any[]>([])
 
   useEffect(() => {
     const token = localStorage.getItem('access_token')
@@ -82,29 +204,106 @@ export default function Dashboard() {
         .catch(() => {})
     }
 
-    getExpenses().then((data) => {
-      setExpenses(data)
-      setLoading(false)
-    })
+    Promise.all([
+      getExpenses().catch((err) => {
+        console.warn('Failed to load expenses:', err)
+        return []
+      }),
+      getRecurringExpenses().catch((err) => {
+        console.warn('Failed to load recurring expenses:', err)
+        return []
+      }),
+    ])
+      .then(([expensesData, recurringData]) => {
+        setExpenses(expensesData)
+        setRecurringExpenses(recurringData)
+      })
+      .finally(() => setLoading(false))
+
+//     if (token) {
+//       fetch('http://localhost:8000/expenses/ai-insights', {
+//       headers: {
+//         Authorization: `Bearer ${token}`,
+//     },
+//   })
+//     .then((res) => res.json())
+//     .then((data) => {
+//       setAiInsights(data.insights)
+//       setAiLoading(false)
+//     })
+//     .catch(() => {
+//       setAiInsights('Unable to generate AI insights.')
+//       setAiLoading(false)
+//     })
+// }
+
+      if (token) {
+        fetch('http://localhost:8000/budgets/progress', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+          .then((res) => res.json())
+          .then((data) => {
+            const alerts = data.filter(
+              (budget: any) =>
+                budget.percentage >= 70
+            )
+
+            setBudgetAlerts(alerts)
+          })
+          .catch(() => {})
+      }
   }, [])
 
-  const totalExpenses = expenses.reduce((t, e) => t + e.amount, 0)
-  const transactionCount = expenses.length
-  const largestExpense =
-    expenses.length > 0 ? Math.max(...expenses.map((e) => e.amount)) : 0
+  const today = new Date()
+  const currentMonthLabel = getCurrentMonthLabel()
+
+  const currentMonthExpenses = expenses.filter((expense) => {
+    const date = new Date(expense.created_at)
+    return (
+      date.getFullYear() === today.getFullYear() &&
+      date.getMonth() === today.getMonth()
+    )
+  })
+
+  let totalExpenses = currentMonthExpenses.reduce(
+    (t, e) => t + e.amount,
+    0,
+  )
+  let transactionCount = currentMonthExpenses.length
 
   const categoryTotals: Record<string, number> = {}
-  expenses.forEach((e) => {
+  currentMonthExpenses.forEach((e) => {
     categoryTotals[e.category] = (categoryTotals[e.category] || 0) + e.amount
   })
+
+  // Add recurring expenses for this month
+  recurringExpenses.forEach((recurring) => {
+    const occurrences = countRecurringInMonth(recurring, today)
+    const recurringTotal = recurring.amount * occurrences
+    if (occurrences > 0) {
+      totalExpenses += recurringTotal
+      transactionCount += occurrences
+      categoryTotals[recurring.category] =
+        (categoryTotals[recurring.category] || 0) + recurringTotal
+    }
+  })
+
+  const largestExpense =
+    expenses.length > 0
+      ? Math.max(...expenses.map((e) => e.amount))
+      : 0
 
   const topCategory =
     Object.entries(categoryTotals).sort((a, b) => b[1] - a[1])[0]?.[0] || '—'
 
-  const chartData = Object.entries(categoryTotals).map(([category, amount]) => ({
-    name: category,
-    value: amount,
-  }))
+  const chartData = Object.entries(categoryTotals).map(
+    ([category, amount]) => ({
+      name: category,
+      value: amount,
+    }),
+  )
 
   const monthlyTotals: Record<string, number> = {}
   expenses.forEach((expense) => {
@@ -113,10 +312,28 @@ export default function Dashboard() {
     monthlyTotals[month] = (monthlyTotals[month] || 0) + expense.amount
   })
 
-  const monthlyChartData = Object.entries(monthlyTotals).map(([month, total]) => ({
-    month,
-    total,
-  }))
+  // Add recurring expenses to months (for current year only)
+  recurringExpenses.forEach((recurring) => {
+    // For each month in the chart, calculate recurring occurrences
+    for (let m = 0; m < 12; m++) {
+      const monthDate = new Date(today.getFullYear(), m, 1)
+      const monthStr = monthDate.toLocaleString('default', {
+        month: 'short',
+      })
+      const occurrences = countRecurringInMonth(recurring, monthDate)
+      if (occurrences > 0) {
+        monthlyTotals[monthStr] =
+          (monthlyTotals[monthStr] || 0) + recurring.amount * occurrences
+      }
+    }
+  })
+
+  const monthlyChartData = Object.entries(monthlyTotals).map(
+    ([month, total]) => ({
+      month,
+      total,
+    }),
+  )
 
   return (
     <>
@@ -228,6 +445,20 @@ export default function Dashboard() {
         .dash-actions {
           display: flex;
           gap: 0.75rem;
+          align-items: center;
+        }
+
+        .dash-month-label {
+          display: inline-flex;
+          align-items: center;
+          padding: 0.65rem 1rem;
+          border-radius: 999px;
+          background: rgba(245,158,11,0.12);
+          color: #f59e0b;
+          font-size: 0.75rem;
+          font-weight: 700;
+          letter-spacing: 0.14em;
+          white-space: nowrap;
         }
 
         .btn-primary,
@@ -412,6 +643,9 @@ export default function Dashboard() {
             </div>
 
             <div className="dash-actions">
+                  <span className="dash-month-label">
+                {currentMonthLabel}
+              </span>
               <Link to="/add" className="btn-primary">
                 + Add Expense
               </Link>
@@ -424,23 +658,23 @@ export default function Dashboard() {
           {/* STATS */}
           <div className="stats-grid">
             <StatCard
-              title="Total Spent"
+              title="Spent this month"
               value={`$${totalExpenses.toFixed(2)}`}
-              sub="all time"
+              sub={currentMonthLabel.replace('MONTH - ', '')}
               accent="#f59e0b"
               delay="0.05s"
             />
             <StatCard
-              title="Transactions"
+              title="Transactions this month"
               value={transactionCount.toString()}
-              sub="recorded"
+              sub={currentMonthLabel.replace('MONTH - ', '')}
               accent="#3b82f6"
               delay="0.1s"
             />
             <StatCard
               title="Largest Expense"
               value={`$${largestExpense.toFixed(2)}`}
-              sub="single item"
+              sub="current month"
               accent="#ec4899"
               delay="0.15s"
             />
@@ -452,6 +686,107 @@ export default function Dashboard() {
               delay="0.2s"
             />
           </div>
+
+          {/* BUDGET ALERTS */}
+          {budgetAlerts.length > 0 && (
+            <div
+              className="panel"
+              style={{
+                marginBottom: '2rem',
+                border:
+                  '1px solid rgba(245,158,11,0.2)',
+              }}
+            >
+              <p className="panel-label">
+                Budget Alerts
+              </p>
+
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: '1rem',
+                }}
+              >
+                {budgetAlerts.map(
+                  (budget, index) => {
+                    const isExceeded =
+                      budget.percentage >= 100
+
+                    return (
+                      <div
+                        key={index}
+                        style={{
+                          background:
+                            'rgba(255,255,255,0.03)',
+                          border:
+                            '1px solid rgba(255,255,255,0.05)',
+                          borderRadius: '10px',
+                          padding: '1rem',
+                        }}
+                      >
+                        <div
+                          style={{
+                            display: 'flex',
+                            justifyContent:
+                              'space-between',
+                            alignItems: 'center',
+                            marginBottom: '0.6rem',
+                          }}
+                        >
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              color: '#fff',
+                            }}
+                          >
+                            {budget.category}
+                          </span>
+
+                          <span
+                            style={{
+                              color: isExceeded
+                                ? '#ef4444'
+                                : '#f59e0b',
+                              fontWeight: 700,
+                            }}
+                          >
+                            {budget.percentage}%
+                          </span>
+                        </div>
+
+                        <div
+                          style={{
+                            color:
+                              'rgba(232,232,240,0.72)',
+                            fontSize: '0.9rem',
+                            lineHeight: 1.7,
+                          }}
+                        >
+                          {isExceeded ? (
+                            <>
+                              ⚠ You exceeded your{' '}
+                              {budget.category} budget by $
+                              {Math.abs(
+                                budget.remaining
+                              ).toFixed(2)}
+                            </>
+                          ) : (
+                            <>
+                              ⚠ You already used{' '}
+                              {budget.percentage}% of
+                              your {budget.category}{' '}
+                              budget
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )
+                  }
+                )}
+              </div>
+            </div>
+          )}
 
           {/* PIE + BREAKDOWN */}
           <div className="main-grid">
@@ -518,6 +853,28 @@ export default function Dashboard() {
               </div>
             )}
           </div>
+
+          {/* AI INSIGHTS
+          <div className="panel" style={{ marginBottom: '2rem' }}>
+            <p className="panel-label">AI Financial Insights</p>
+
+            {aiLoading ? (
+              <div className="loading-state">
+                Generating AI insights…
+              </div>
+            ) : (
+              <div
+                style={{
+                  lineHeight: '1.9',
+                  fontSize: '0.95rem',
+                  color: 'rgba(232,232,240,0.82)',
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {aiInsights}
+              </div>
+            )}
+          </div> */}
 
           {/* RECENT EXPENSES */}
           <div className="list-panel">
