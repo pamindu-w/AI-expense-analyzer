@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Header
+from fastapi import FastAPI, HTTPException, Header, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
@@ -11,9 +11,13 @@ dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 load_dotenv(dotenv_path)
 
 from prisma import Prisma
+import asyncio
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
+
+from app.ai_service import ai_available, generate_expense_insights
+from app.pdf_service import extract_from_pdf, PdfParseError
 
 app = FastAPI()
 
@@ -177,6 +181,14 @@ def normalize_month(month_value) -> str:
         # Strip to first 7 characters: "YYYY-MM"
         return month_value[:7]
     return str(month_value)[:7]
+
+
+def current_month() -> str:
+    """
+    Return the current month as 'YYYY-MM', used as the effective month for
+    all recurring monthly budgets.
+    """
+    return datetime.utcnow().strftime("%Y-%m")
 
 
 # =========================
@@ -344,6 +356,94 @@ async def get_expenses(authorization: str | None = Header(None, alias="Authoriza
     return expenses
 
 
+@app.get("/expenses/ai-insights")
+async def get_ai_insights(
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    if not ai_available():
+        return {
+            "insights": {
+                "trends": "",
+                "topCategories": [],
+                "anomalies": "",
+                "advice": "AI insights are not configured. Add a GEMINI_API_KEY to enable them.",
+                "error": "GEMINI_API_KEY not set",
+            }
+        }
+
+    await process_due_recurring_expenses(user.id)
+
+    expenses = await db.query_raw(
+        'SELECT * FROM "Expense" WHERE user_id = $1 ORDER BY created_at DESC',
+        user.id
+    )
+
+    budgets = await db.query_raw(
+        'SELECT * FROM "Budget" WHERE user_id = $1 ORDER BY created_at DESC',
+        user.id
+    )
+
+    latest_by_category = {}
+    for b in budgets:
+        key = b["category"].lower()
+        if key not in latest_by_category:
+            latest_by_category[key] = b
+
+    month = current_month()
+    budget_progress = []
+    for budget in latest_by_category.values():
+        category = budget["category"]
+
+        category_expenses = await db.query_raw(
+            '''
+            SELECT *
+            FROM "Expense"
+            WHERE user_id = $1
+            AND LOWER(category) = LOWER($2)
+            AND created_at >= to_date($3, 'YYYY-MM')
+            AND created_at < (to_date($3, 'YYYY-MM') + interval '1 month')
+            ''',
+            user.id,
+            category,
+            month
+        )
+
+        spent = sum(e["amount"] for e in category_expenses)
+        limit_amount = budget["limit"]
+        percentage = (spent / limit_amount) * 100 if limit_amount > 0 else 0
+
+        budget_progress.append({
+            "category": category,
+            "month": month,
+            "limit": limit_amount,
+            "spent": round(spent, 2),
+            "percentage": round(percentage, 1),
+        })
+
+    recurring = await db.query_raw(
+        'SELECT * FROM "RecurringExpense" WHERE user_id = $1',
+        user.id
+    )
+
+    insights = await asyncio.to_thread(
+        generate_expense_insights,
+        expenses,
+        budget_progress,
+        recurring,
+    )
+
+    return {"insights": insights}
+
+
 @app.post("/expenses")
 async def create_expense(
     expense: ExpenseCreate,
@@ -456,6 +556,32 @@ async def update_expense(
     return updated[0] if updated else {}
 
 
+@app.post("/parse-pdf")
+async def parse_pdf(
+    file: UploadFile = File(...),
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    """Parse an uploaded PDF and return an extracted amount + suggested title."""
+    user_email = get_current_user(authorization)
+
+    if file.content_type not in ("application/pdf", "application/x-pdf"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file.content_type or 'unknown'}. Please upload a PDF.",
+        )
+
+    data = await file.read()
+
+    try:
+        result = extract_from_pdf(data)
+    except PdfParseError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - unexpected failure
+        raise HTTPException(status_code=400, detail=f"Could not process PDF: {exc}") from exc
+
+    return result
+
+
 # =========================
 # BUDGET ROUTES
 # =========================
@@ -474,51 +600,42 @@ async def create_budget(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # Normalize incoming month to "YYYY-MM"
-    target_month = normalize_month(budget.month)
+    # Budgets are recurring monthly: a single budget per category that always
+    # applies to the current month. Spending is computed live from Expense
+    # records, so it refreshes automatically every month.
+    target_month = current_month()
 
-    # Check if a budget already exists for this category + month (exact match)
+    # Check if a budget already exists for this category. If it does, just
+    # update its limit so it keeps recurring (no per-month rows pile up).
     existing_budgets = await db.query_raw(
         '''
         SELECT * FROM "Budget"
         WHERE user_id = $1
           AND LOWER(category) = LOWER($2)
-        ORDER BY month DESC
+        ORDER BY created_at DESC
         ''',
         user.id,
         budget.category,
     )
 
-    for b in existing_budgets:
-        b_month = normalize_month(b["month"])
+    if existing_budgets:
+        await db.execute_raw(
+            '''
+            UPDATE "Budget"
+            SET month = $1, "limit" = $2
+            WHERE id = $3
+            ''',
+            target_month,
+            budget.limit,
+            existing_budgets[0]["id"],
+        )
+        result = await db.query_raw(
+            'SELECT * FROM "Budget" WHERE id = $1',
+            existing_budgets[0]["id"],
+        )
+        return result[0]
 
-        # Exact match: budget already exists for this month → reject
-        if b_month == target_month:
-            raise HTTPException(
-                status_code=400,
-                detail="Budget already exists for this category and month"
-            )
-
-        # Previous month found: reuse it by rolling it forward to the new month
-        # This resets "spent" automatically because spent is computed from Expense records
-        if b_month < target_month:
-            await db.execute_raw(
-                '''
-                UPDATE "Budget"
-                SET month = $1, "limit" = $2
-                WHERE id = $3
-                ''',
-                target_month,
-                budget.limit,
-                b["id"]
-            )
-            result = await db.query_raw(
-                'SELECT * FROM "Budget" WHERE id = $1',
-                b["id"]
-            )
-            return result[0]
-
-    # No existing budget for this category at all → create a new one
+    # No budget for this category at all → create one.
     result = await db.query_raw(
         '''
         INSERT INTO "Budget" (category, "limit", month, user_id, created_at)
@@ -528,7 +645,7 @@ async def create_budget(
         budget.category,
         budget.limit,
         target_month,
-        user.id
+        user.id,
     )
 
     return result[0]
@@ -563,7 +680,15 @@ async def get_budgets(
         user.id
     )
 
-    return budgets
+    # Budgets are recurring monthly per category — return only the latest
+    # budget for each category.
+    latest_by_category = {}
+    for b in budgets:
+        key = b["category"].lower()
+        if key not in latest_by_category:
+            latest_by_category[key] = b
+
+    return list(latest_by_category.values())
 
 @app.get("/budgets/progress")
 async def get_budget_progress(
@@ -591,15 +716,24 @@ async def get_budget_progress(
         SELECT *
         FROM "Budget"
         WHERE user_id = $1
+        ORDER BY created_at DESC
         ''',
         user.id
     )
 
+    # Budgets are recurring monthly per category: keep only the latest row for
+    # each category and compute progress for the CURRENT month.
+    latest_by_category = {}
+    for b in budgets:
+        key = b["category"].lower()
+        if key not in latest_by_category:
+            latest_by_category[key] = b
+
+    month = current_month()
     progress_data = []
 
-    for budget in budgets:
+    for budget in latest_by_category.values():
 
-        month = normalize_month(budget["month"])
         category = budget["category"]
 
         expenses = await db.query_raw(
