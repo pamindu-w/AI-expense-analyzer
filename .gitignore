@@ -1,0 +1,61 @@
+# === Python / Backend ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist-packages/
+eggs/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+ENV/
+
+# Prisma
+backend/prisma/*.db
+backend/prisma/*.db-journal
+*.prisma-client-*
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+login.json
+signup.json
+
+# Debug / scratch scripts
+debug_*.py
+inspect_*.py
+
+# === Node / Frontend ===
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# === Editor / OS ===
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# === Logs ===
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*

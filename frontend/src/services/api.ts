@@ -1,12 +1,4 @@
-import axios from "axios";
-
-const api = axios.create({
-  baseURL: "http://127.0.0.1:8000",
-});
-
-export default api;
-
-const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
+export const API_URL = import.meta.env.VITE_API_URL ?? 'http://127.0.0.1:8000'
 
 // Helper function to get the authorization header
 const getAuthHeader = (): Record<string, string> => {
@@ -134,6 +126,45 @@ export const updateRecurringExpenseStatus = async (
   if (!response.ok) {
     const text = await response.text()
     throw new Error(`Failed to update recurring expense: ${response.status} ${response.statusText} - ${text}`)
+  }
+  return response.json()
+}
+
+export const deleteRecurringExpense = async (id: number) => {
+  const response = await fetch(`${API_URL}/recurring-expenses/${id}`, {
+    method: 'DELETE',
+    headers: getAuthHeader(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to delete recurring expense: ${response.status} ${response.statusText} - ${text}`)
+  }
+  return response.json()
+}
+
+export const getAllRecurringExpenses = async () => {
+  const response = await fetch(`${API_URL}/recurring-expenses/all`, {
+    headers: getAuthHeader(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to fetch all recurring expenses: ${response.status} ${response.statusText} - ${text}`)
+  }
+  return response.json()
+}
+
+export const updateBudget = async (id: number, limit: number) => {
+  const response = await fetch(`${API_URL}/budgets/${id}`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeader(),
+    },
+    body: JSON.stringify({ limit }),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to update budget: ${response.status} ${response.statusText} - ${text}`)
   }
   return response.json()
 }

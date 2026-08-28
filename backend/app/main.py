@@ -3,26 +3,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
 import os
-from openai import OpenAI
-
-
+import logging
 
 # Load environment variables (DATABASE_URL) before importing Prisma
 # Load .env from the backend folder so DATABASE_URL is available
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 load_dotenv(dotenv_path)
 
-client = OpenAI(
-    api_key=os.getenv("OPENAI_API_KEY")
-)
-
 from prisma import Prisma
 from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
-from app.models.user import User
-from app.models.expense import Expense
-import logging
 
 app = FastAPI()
 
@@ -74,7 +65,7 @@ db = Prisma()
 # SECURITY
 # =========================
 
-SECRET_KEY = "SECRET123"
+SECRET_KEY = os.getenv("SECRET_KEY", "SECRET123")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60*24
 
@@ -142,7 +133,11 @@ class ExpenseCreate(BaseModel):
 class BudgetCreate(BaseModel):
     category: str
     limit: float
-    month: str
+    month: str  # expected format: "YYYY-MM"
+
+
+class BudgetUpdate(BaseModel):
+    limit: float
 
 class RecurringExpenseCreate(BaseModel):
     title: str
@@ -165,6 +160,23 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+# =========================
+# HELPERS
+# =========================
+
+def normalize_month(month_value) -> str:
+    """
+    Normalize a month value to 'YYYY-MM' string format.
+    Handles: 'YYYY-MM', 'YYYY-MM-DD', datetime objects, 'YYYY-MM-DDTHH:MM:SS...' etc.
+    """
+    if isinstance(month_value, datetime):
+        return month_value.strftime("%Y-%m")
+    if isinstance(month_value, str):
+        # Strip to first 7 characters: "YYYY-MM"
+        return month_value[:7]
+    return str(month_value)[:7]
 
 
 # =========================
@@ -322,7 +334,8 @@ async def get_expenses(authorization: str | None = Header(None, alias="Authoriza
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
-    # Use raw SQL to bypass Prisma relation issues
+    await process_due_recurring_expenses(user.id)
+
     expenses = await db.query_raw(
         'SELECT * FROM "Expense" WHERE user_id = $1 ORDER BY created_at DESC',
         user.id
@@ -442,101 +455,84 @@ async def update_expense(
 
     return updated[0] if updated else {}
 
-# @app.get("/expenses/ai-insights")
-# async def ai_insights(authorization: str | None = Header(None)):
-#     user_email = get_current_user(authorization)
 
-#     user = await db.user.find_unique(where={"email": user_email})
-#     if not user:
-#         raise HTTPException(status_code=401, detail="User not found")
-
-#     expenses = await db.query_raw(
-#         'SELECT title, amount, category FROM "Expense" WHERE user_id = $1',
-#         user.id
-#     )
-
-#     if not expenses:
-#         return {"insights": "No expenses found yet."}
-
-#     expense_text = "\n".join([
-#         f"{e['title']} - ${e['amount']} - {e['category']}"
-#         for e in expenses
-#     ])
-
-#     message = client.messages.create(
-#         model="claude-haiku-4-5-20251001",
-#         max_tokens=1024,
-#         messages=[
-#             {
-#                 "role": "user",
-#                 "content": f"""Analyze these expenses and provide:
-# - spending trends
-# - biggest categories  
-# - unusual spending
-# - saving advice
-
-# Keep it short and useful.
-
-# Expenses:
-# {expense_text}"""
-#             }
-#         ]
-#     )
-
-#     return {"insights": message.content[0].text}
+# =========================
+# BUDGET ROUTES
+# =========================
 
 @app.post("/budgets")
 async def create_budget(
     budget: BudgetCreate,
     authorization: str | None = Header(None, alias="Authorization")
 ):
-
-    user_email = get_current_user(
-        authorization
-    )
+    user_email = get_current_user(authorization)
 
     user = await db.user.find_unique(
         where={"email": user_email}
     )
 
     if not user:
-        raise HTTPException(
-            status_code=401,
-            detail="User not found"
-        )
+        raise HTTPException(status_code=401, detail="User not found")
 
-    existing_budget = await db.query_raw(
+    # Normalize incoming month to "YYYY-MM"
+    target_month = normalize_month(budget.month)
+
+    # Check if a budget already exists for this category + month (exact match)
+    existing_budgets = await db.query_raw(
         '''
         SELECT * FROM "Budget"
         WHERE user_id = $1
-        AND category = $2
-        AND month = $3
+          AND LOWER(category) = LOWER($2)
+        ORDER BY month DESC
         ''',
         user.id,
         budget.category,
-        budget.month
     )
 
-    if existing_budget:
-        raise HTTPException(
-            status_code=400,
-            detail="Budget already exists for this category and month"
-        )
+    for b in existing_budgets:
+        b_month = normalize_month(b["month"])
 
+        # Exact match: budget already exists for this month → reject
+        if b_month == target_month:
+            raise HTTPException(
+                status_code=400,
+                detail="Budget already exists for this category and month"
+            )
+
+        # Previous month found: reuse it by rolling it forward to the new month
+        # This resets "spent" automatically because spent is computed from Expense records
+        if b_month < target_month:
+            await db.execute_raw(
+                '''
+                UPDATE "Budget"
+                SET month = $1, "limit" = $2
+                WHERE id = $3
+                ''',
+                target_month,
+                budget.limit,
+                b["id"]
+            )
+            result = await db.query_raw(
+                'SELECT * FROM "Budget" WHERE id = $1',
+                b["id"]
+            )
+            return result[0]
+
+    # No existing budget for this category at all → create a new one
     result = await db.query_raw(
         '''
-        INSERT INTO "Budget"
-        (category, "limit", month, user_id, created_at)
+        INSERT INTO "Budget" (category, "limit", month, user_id, created_at)
         VALUES ($1, $2, $3, $4, NOW())
         RETURNING *
         ''',
         budget.category,
         budget.limit,
-        budget.month,
+        target_month,
         user.id
     )
 
     return result[0]
+
 
 @app.get("/budgets")
 async def get_budgets(
@@ -588,6 +584,8 @@ async def get_budget_progress(
             detail="User not found"
         )
 
+    await process_due_recurring_expenses(user.id)
+
     budgets = await db.query_raw(
         '''
         SELECT *
@@ -601,7 +599,7 @@ async def get_budget_progress(
 
     for budget in budgets:
 
-        month = budget["month"]
+        month = normalize_month(budget["month"])
         category = budget["category"]
 
         expenses = await db.query_raw(
@@ -609,8 +607,9 @@ async def get_budget_progress(
             SELECT *
             FROM "Expense"
             WHERE user_id = $1
-            AND category = $2
-            AND TO_CHAR(created_at, 'YYYY-MM') = $3
+            AND LOWER(category) = LOWER($2)
+            AND created_at >= to_date($3, 'YYYY-MM')
+            AND created_at < (to_date($3, 'YYYY-MM') + interval '1 month')
             ''',
             user.id,
             category,
@@ -632,6 +631,7 @@ async def get_budget_progress(
         )
 
         progress_data.append({
+            "id": budget["id"],
             "category": category,
             "month": month,
             "limit": limit_amount,
@@ -641,6 +641,122 @@ async def get_budget_progress(
         })
 
     return progress_data
+
+
+@app.put("/budgets/{budget_id}")
+async def update_budget(
+    budget_id: int,
+    update: BudgetUpdate,
+    authorization: str | None = Header(None, alias="Authorization")
+):
+
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    existing = await db.query_raw(
+        'SELECT * FROM "Budget" WHERE id = $1',
+        budget_id
+    )
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Budget not found")
+
+    if existing[0]["user_id"] != user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized: This budget does not belong to you")
+
+    if update.limit <= 0:
+        raise HTTPException(status_code=400, detail="Limit must be greater than 0")
+
+    await db.execute_raw(
+        'UPDATE "Budget" SET "limit" = $1 WHERE id = $2',
+        update.limit,
+        budget_id
+    )
+
+    result = await db.query_raw(
+        'SELECT * FROM "Budget" WHERE id = $1',
+        budget_id
+    )
+
+    return result[0] if result else {}
+
+
+# =========================
+# RECURRING EXPENSE HELPERS
+# =========================
+
+def add_months(start_date: datetime, months: int) -> datetime:
+    year = start_date.year + (start_date.month - 1 + months) // 12
+    month = (start_date.month - 1 + months) % 12 + 1
+    day = start_date.day
+    try:
+        return start_date.replace(year=year, month=month, day=day)
+    except ValueError:
+        # Handle end-of-month overflow
+        next_month_first = datetime(year, month, 1)
+        last_day = (next_month_first + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        return last_day
+
+
+async def process_due_recurring_expenses(user_id: int):
+    today = datetime.utcnow().date()
+    recurring_items = await db.query_raw(
+        '''
+        SELECT *
+        FROM "RecurringExpense"
+        WHERE user_id = $1
+          AND active = true
+          AND deleted_at IS NULL
+          AND next_run <= NOW()
+        ''',
+        user_id
+    )
+
+    for item in recurring_items:
+        next_run = item["next_run"]
+
+        # Convert string to datetime if necessary
+        if isinstance(next_run, str):
+            next_run = datetime.fromisoformat(next_run)
+
+        while next_run.date() <= today:
+            await db.query_raw(
+                '''
+                INSERT INTO "Expense" (title, amount, category, user_id, created_at)
+                VALUES ($1, $2, $3, $4, $5::timestamp)
+                ''',
+                item["title"],
+                item["amount"],
+                item["category"],
+                user_id,
+                next_run,
+            )
+
+            if item["frequency"].lower() == "monthly":
+                next_run = add_months(next_run, 1)
+            else:
+                next_run = next_run + timedelta(weeks=1)
+
+        await db.execute_raw(
+            '''
+            UPDATE "RecurringExpense"
+            SET next_run = $1::timestamp
+            WHERE id = $2
+            ''',
+            next_run,
+            item["id"]
+        )
+
+
+# =========================
+# RECURRING EXPENSE ROUTES
+# =========================
 
 @app.post("/recurring-expenses")
 async def create_recurring_expense(
@@ -668,6 +784,18 @@ async def create_recurring_expense(
             detail="Amount must be greater than 0"
         )
 
+    next_run_date = recurring.next_run
+    today = datetime.utcnow().date()
+
+    # If provided date is in the past, advance to the next period.
+    if next_run_date.date() < today:
+        if recurring.frequency.lower() == "weekly":
+            while next_run_date.date() < today:
+                next_run_date = next_run_date + timedelta(weeks=1)
+        elif recurring.frequency.lower() == "monthly":
+            while next_run_date.date() < today:
+                next_run_date = add_months(next_run_date, 1)
+
     result = await db.query_raw(
         '''
         INSERT INTO "RecurringExpense"
@@ -692,15 +820,16 @@ async def create_recurring_expense(
         recurring.amount,
         recurring.category,
         recurring.frequency,
-        recurring.next_run,
+        next_run_date,
         user.id
     )
 
     return result[0]
 
+
 @app.get("/recurring-expenses")
 async def get_recurring_expenses(
-    authorization: str | None = Header(None)
+    authorization: str | None = Header(None, alias="Authorization")
 ):
 
     user_email = get_current_user(
@@ -716,6 +845,33 @@ async def get_recurring_expenses(
             status_code=401,
             detail="User not found"
         )
+
+    recurring = await db.query_raw(
+        '''
+        SELECT *
+        FROM "RecurringExpense"
+        WHERE user_id = $1 AND deleted_at IS NULL
+        ORDER BY next_run ASC
+        ''',
+        user.id
+    )
+
+    return recurring
+
+
+@app.get("/recurring-expenses/all")
+async def get_all_recurring_expenses(
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    """Get all recurring expenses including deleted ones (for dashboard calculations)"""
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
 
     recurring = await db.query_raw(
         '''
@@ -785,3 +941,42 @@ async def update_recurring_expense(
     )
 
     return result[0] if result else {}
+
+
+@app.delete("/recurring-expenses/{recurring_id}")
+async def delete_recurring_expense(
+    recurring_id: int,
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    existing = await db.query_raw(
+        'SELECT * FROM "RecurringExpense" WHERE id = $1',
+        recurring_id
+    )
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Recurring expense not found")
+
+    if existing[0]["user_id"] != user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized: This recurring expense does not belong to you")
+
+    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+    await db.execute_raw(
+        '''
+        UPDATE "RecurringExpense"
+        SET deleted_at = $1::timestamp
+        WHERE id = $2
+        ''',
+        timestamp,
+        recurring_id
+    )
+
+    return {"message": "Recurring expense deleted successfully"}

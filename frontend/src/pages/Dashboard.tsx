@@ -10,7 +10,7 @@ import {
   CartesianGrid,
 } from 'recharts'
 
-import { getExpenses, getRecurringExpenses } from '../services/api'
+import { getExpenses, API_URL } from '../services/api'
 import Navbar from '../components/Navbar'
 import ExpenseChart from '../components/ExpenseChart'
 import ExpenseList from '../components/ExpenseList'
@@ -21,117 +21,6 @@ type Expense = {
   amount: number
   category: string
   created_at: string
-}
-
-type RecurringExpense = {
-  id: number
-  title: string
-  amount: number
-  category: string
-  frequency: string
-  next_run: string
-  active: boolean
-  deactivated_at?: string
-  created_at: string
-}
-
-function getWeekBounds(date: Date) {
-  const dayOfWeek = date.getDay()
-  const start = new Date(date)
-  start.setDate(date.getDate() - dayOfWeek)
-  start.setHours(0, 0, 0, 0)
-
-  const end = new Date(start)
-  end.setDate(start.getDate() + 6)
-  end.setHours(23, 59, 59, 999)
-
-  return { start, end }
-}
-
-function countRecurringInMonth(
-  recurring: RecurringExpense,
-  currentMonth: Date,
-): number {
-  const nextRun = new Date(recurring.next_run)
-  const monthStart = new Date(
-    currentMonth.getFullYear(),
-    currentMonth.getMonth(),
-    1,
-  )
-  const monthEnd = new Date(
-    currentMonth.getFullYear(),
-    currentMonth.getMonth() + 1,
-    0,
-  )
-
-  const isScheduledThisMonth =
-    nextRun >= monthStart && nextRun <= monthEnd
-
-  const deactivatedAt =
-    recurring.deactivated_at &&
-    new Date(recurring.deactivated_at)
-
-  if (!recurring.active && !deactivatedAt) {
-    return 0
-  }
-
-  if (recurring.frequency === 'monthly') {
-    if (deactivatedAt) {
-      if (
-        deactivatedAt.getFullYear() ===
-          currentMonth.getFullYear() &&
-        deactivatedAt.getMonth() ===
-          currentMonth.getMonth()
-      ) {
-        return isScheduledThisMonth ? 1 : 0
-      }
-      return 0
-    }
-
-    return isScheduledThisMonth ? 1 : 0
-  }
-
-  if (recurring.frequency === 'weekly') {
-    if (deactivatedAt) {
-      if (
-        deactivatedAt.getFullYear() !==
-          currentMonth.getFullYear() ||
-        deactivatedAt.getMonth() !==
-          currentMonth.getMonth()
-      ) {
-        return 0
-      }
-
-      const weekBounds = getWeekBounds(deactivatedAt)
-      let count = 0
-      let current = new Date(nextRun)
-      while (current <= weekBounds.end) {
-        if (current >= weekBounds.start) {
-          count++
-        }
-        current = new Date(
-          current.getTime() +
-            7 * 24 * 60 * 60 * 1000,
-        )
-      }
-      return count
-    }
-
-    let count = 0
-    let current = new Date(nextRun)
-    while (current <= monthEnd) {
-      if (current >= monthStart) {
-        count++
-      }
-      current = new Date(
-        current.getTime() +
-          7 * 24 * 60 * 60 * 1000,
-      )
-    }
-    return count
-  }
-
-  return 0
 }
 
 const CATEGORY_COLORS: Record<string, string> = {
@@ -182,7 +71,6 @@ function StatCard({
 
 export default function Dashboard() {
   const [expenses, setExpenses] = useState<Expense[]>([])
-  const [recurringExpenses, setRecurringExpenses] = useState<RecurringExpense[]>([])
   const [loading, setLoading] = useState(true)
   const [username, setUsername] = useState<string>('')
   // const [aiInsights, setAiInsights] = useState('')
@@ -192,7 +80,7 @@ export default function Dashboard() {
   useEffect(() => {
     const token = localStorage.getItem('access_token')
     if (token) {
-      fetch('http://localhost:8000/validate', {
+      fetch(`${API_URL}/validate`, {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then((res) => res.json())
@@ -204,19 +92,11 @@ export default function Dashboard() {
         .catch(() => {})
     }
 
-    Promise.all([
-      getExpenses().catch((err) => {
+    getExpenses()
+      .then((data) => setExpenses(data))
+      .catch((err) => {
         console.warn('Failed to load expenses:', err)
-        return []
-      }),
-      getRecurringExpenses().catch((err) => {
-        console.warn('Failed to load recurring expenses:', err)
-        return []
-      }),
-    ])
-      .then(([expensesData, recurringData]) => {
-        setExpenses(expensesData)
-        setRecurringExpenses(recurringData)
+        setExpenses([])
       })
       .finally(() => setLoading(false))
 
@@ -238,7 +118,7 @@ export default function Dashboard() {
 // }
 
       if (token) {
-        fetch('http://localhost:8000/budgets/progress', {
+        fetch(`${API_URL}/budgets/progress`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -278,19 +158,7 @@ export default function Dashboard() {
     categoryTotals[e.category] = (categoryTotals[e.category] || 0) + e.amount
   })
 
-  // Add recurring expenses for this month
-  recurringExpenses.forEach((recurring) => {
-    const occurrences = countRecurringInMonth(recurring, today)
-    const recurringTotal = recurring.amount * occurrences
-    if (occurrences > 0) {
-      totalExpenses += recurringTotal
-      transactionCount += occurrences
-      categoryTotals[recurring.category] =
-        (categoryTotals[recurring.category] || 0) + recurringTotal
-    }
-  })
-
-  const largestExpense =
+  let largestExpense =
     expenses.length > 0
       ? Math.max(...expenses.map((e) => e.amount))
       : 0
@@ -312,28 +180,20 @@ export default function Dashboard() {
     monthlyTotals[month] = (monthlyTotals[month] || 0) + expense.amount
   })
 
-  // Add recurring expenses to months (for current year only)
-  recurringExpenses.forEach((recurring) => {
-    // For each month in the chart, calculate recurring occurrences
-    for (let m = 0; m < 12; m++) {
-      const monthDate = new Date(today.getFullYear(), m, 1)
-      const monthStr = monthDate.toLocaleString('default', {
-        month: 'short',
-      })
-      const occurrences = countRecurringInMonth(recurring, monthDate)
-      if (occurrences > 0) {
-        monthlyTotals[monthStr] =
-          (monthlyTotals[monthStr] || 0) + recurring.amount * occurrences
-      }
-    }
-  })
-
-  const monthlyChartData = Object.entries(monthlyTotals).map(
-    ([month, total]) => ({
+  const monthlyChartData = Object.entries(monthlyTotals)
+    .filter(([month]) => {
+      // Only show months up to and including current month
+      const monthNames = [
+        'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+      ]
+      const monthIndex = monthNames.indexOf(month)
+      return monthIndex >= 0 && monthIndex <= today.getMonth()
+    })
+    .map(([month, total]) => ({
       month,
       total,
-    }),
-  )
+    }))
 
   return (
     <>

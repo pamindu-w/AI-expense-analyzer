@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react'
 import Navbar from '../components/Navbar'
-import { getBudgetProgress, createBudget } from '../services/api'
+import { getBudgetProgress, createBudget, updateBudget } from '../services/api'
 
 type BudgetProgress = {
+  id?: number
   category: string
   month: string
   limit: number
@@ -10,8 +11,6 @@ type BudgetProgress = {
   remaining: number
   percentage: number
 }
-
-
 
 const CATEGORY_COLORS: Record<string, string> = {
   Food: '#f59e0b',
@@ -31,7 +30,16 @@ export default function Budgets() {
   const [limit, setLimit] = useState('')
   const [month, setMonth] = useState('')
 
+  const today = new Date()
+  const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
+
+  // Handles "2026-06", "2026-06-01", "2026-06-01T00:00:00.000Z", etc.
+  function isSameMonth(budgetMonth: string) {
+    return budgetMonth.startsWith(currentMonth)
+  }
+
   async function loadBudgets() {
+    setLoading(true)
     try {
       const data = await getBudgetProgress()
       setBudgets(data)
@@ -44,6 +52,11 @@ export default function Budgets() {
 
   useEffect(() => {
     loadBudgets()
+    const handleFocus = () => {
+      loadBudgets()
+    }
+    window.addEventListener('focus', handleFocus)
+    return () => window.removeEventListener('focus', handleFocus)
   }, [])
 
   async function handleCreateBudget(e: React.FormEvent) {
@@ -80,6 +93,23 @@ export default function Budgets() {
   const totalBudgeted = budgets.reduce((s, b) => s + b.limit, 0)
   const totalSpent = budgets.reduce((s, b) => s + b.spent, 0)
   const overBudget = budgets.filter((b) => b.percentage >= 100).length
+
+  async function handleChangeLimit(budget: BudgetProgress) {
+    const input = prompt(`Enter new limit for ${budget.category} (${budget.month})`, String(budget.limit))
+    if (!input) return
+    const newLimit = Number(input)
+    if (isNaN(newLimit) || newLimit <= 0) {
+      alert('Please enter a valid number greater than 0')
+      return
+    }
+    try {
+      await updateBudget((budget as any).id, newLimit)
+      await loadBudgets()
+    } catch (err) {
+      console.warn('Failed to update budget:', err)
+      alert('Failed to update budget')
+    }
+  }
 
   return (
     <>
@@ -133,7 +163,6 @@ export default function Budgets() {
           padding: 2.5rem 2rem 5rem;
         }
 
-        /* header */
         .b-header {
           display: flex;
           align-items: flex-start;
@@ -210,7 +239,6 @@ export default function Budgets() {
           transform: translateY(-2px);
         }
 
-        /* stats */
         .stats-row {
           display: grid;
           grid-template-columns: repeat(3, 1fr);
@@ -255,7 +283,6 @@ export default function Budgets() {
           color: #fff;
         }
 
-        /* form */
         .form-panel {
           background: #0b0b18;
           border: 1px solid rgba(16,185,129,0.15);
@@ -346,7 +373,6 @@ export default function Budgets() {
           color: #e4e4f0;
         }
 
-        /* section */
         .section-label {
           font-size: 0.6rem;
           letter-spacing: 0.2em;
@@ -365,7 +391,6 @@ export default function Budgets() {
           background: rgba(228,228,240,0.05);
         }
 
-        /* cards */
         .cards-grid {
           display: grid;
           grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
@@ -441,7 +466,6 @@ export default function Budgets() {
           border-radius: 999px;
         }
 
-        /* amounts row */
         .amounts-row {
           display: grid;
           grid-template-columns: repeat(3, 1fr);
@@ -470,7 +494,6 @@ export default function Budgets() {
           color: #fff;
         }
 
-        /* progress */
         .progress-label {
           display: flex;
           justify-content: space-between;
@@ -532,9 +555,14 @@ export default function Budgets() {
               <h1 className="b-title">Budgets</h1>
               <p className="b-subtitle">// track limits by category & month</p>
             </div>
-            <button className="add-btn" onClick={() => setFormOpen(!formOpen)}>
-              {formOpen ? '✕ Cancel' : '+ New Budget'}
-            </button>
+            <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
+              <button className="btn-cancel" onClick={loadBudgets}>
+                Refresh
+              </button>
+              <button className="add-btn" onClick={() => setFormOpen(!formOpen)}>
+                {formOpen ? '✕ Cancel' : '+ New Budget'}
+              </button>
+            </div>
           </div>
 
           {/* STATS */}
@@ -613,9 +641,13 @@ export default function Budgets() {
               <div className="cards-grid">
                 {budgets.map((budget, i) => {
                   const color = CATEGORY_COLORS[budget.category] || '#10b981'
-                  const barColor = getStatusColor(budget.percentage)
-                  const status = getStatusLabel(budget.percentage)
-                  const pct = Math.min(budget.percentage, 100)
+                  const isCurrentMonth = isSameMonth(budget.month)
+                  const displaySpent = isCurrentMonth ? budget.spent : 0
+                  const displayRemaining = isCurrentMonth ? budget.remaining : budget.limit
+                  const displayPercentage = isCurrentMonth ? budget.percentage : 0
+                  const barColor = getStatusColor(isCurrentMonth ? budget.percentage : 0)
+                  const status = getStatusLabel(isCurrentMonth ? budget.percentage : 0)
+                  const pct = Math.min(displayPercentage, 100)
 
                   return (
                     <div
@@ -657,25 +689,36 @@ export default function Budgets() {
                         </div>
                         <div className="amount-box">
                           <p className="amount-key">Spent</p>
-                          <p className="amount-val" style={{ color: barColor }}>${budget.spent}</p>
+                          <p className="amount-val" style={{ color: barColor }}>
+                            ${displaySpent}
+                          </p>
                         </div>
                         <div className="amount-box">
                           <p className="amount-key">Left</p>
-                          <p className="amount-val" style={{ color: budget.remaining < 0 ? '#ef4444' : '#10b981' }}>
-                            ${Math.abs(budget.remaining)}
+                          <p className="amount-val" style={{ color: displayRemaining < 0 ? '#ef4444' : '#10b981' }}>
+                            ${Math.abs(displayRemaining)}
                           </p>
                         </div>
                       </div>
 
-                      <div className="progress-label">
-                        <span className="progress-pct">{budget.percentage}% used</span>
-                        <span className="progress-pct">${budget.limit - budget.spent > 0 ? budget.limit - budget.spent : 0} left</span>
-                      </div>
-                      <div className="progress-track">
-                        <div
-                          className="progress-fill"
-                          style={{ width: `${pct}%`, background: barColor }}
-                        />
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '0.6rem' }}>
+                        <div style={{ flex: 1 }}>
+                          <div className="progress-label">
+                            <span className="progress-pct">{displayPercentage}% used</span>
+                            <span className="progress-pct">${Math.max(budget.limit - displaySpent, 0)} left</span>
+                          </div>
+                          <div className="progress-track">
+                            <div
+                              className="progress-fill"
+                              style={{ width: `${pct}%`, background: barColor }}
+                            />
+                          </div>
+                        </div>
+                        <div style={{ marginLeft: '0.9rem' }}>
+                          <button className="btn-cancel" onClick={() => handleChangeLimit(budget)}>
+                            Change Limit
+                          </button>
+                        </div>
                       </div>
                     </div>
                   )

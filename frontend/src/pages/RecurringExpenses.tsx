@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import Navbar from '../components/Navbar'
+import { API_URL } from '../services/api'
 
 type RecurringExpense = {
   id: number
@@ -25,7 +26,6 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const FREQ_LABEL: Record<string, string> = {
   monthly: 'Monthly',
-  weekly: 'Weekly',
 }
 
 export default function RecurringExpenses() {
@@ -42,7 +42,7 @@ export default function RecurringExpenses() {
 
   async function loadRecurringExpenses() {
     const token = localStorage.getItem('access_token')
-    const response = await fetch('http://localhost:8000/recurring-expenses', {
+    const response = await fetch(`${API_URL}/recurring-expenses`, {
       headers: { Authorization: `Bearer ${token}` },
     })
     const data = await response.json()
@@ -58,7 +58,7 @@ export default function RecurringExpenses() {
     e.preventDefault()
     setSubmitting(true)
     const token = localStorage.getItem('access_token')
-    const response = await fetch('http://localhost:8000/recurring-expenses', {
+    const response = await fetch(`${API_URL}/recurring-expenses`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -68,7 +68,7 @@ export default function RecurringExpenses() {
         title,
         amount: Number(amount),
         category,
-        frequency,
+        frequency: 'monthly',
         next_run: nextRun,
       }),
     })
@@ -89,7 +89,7 @@ export default function RecurringExpenses() {
   async function toggleStatus(expense: RecurringExpense) {
     const token = localStorage.getItem('access_token')
     const response = await fetch(
-      `http://localhost:8000/recurring-expenses/${expense.id}`,
+      `${API_URL}/recurring-expenses/${expense.id}`,
       {
         method: 'PUT',
         headers: {
@@ -109,17 +109,35 @@ export default function RecurringExpenses() {
     if (updated.active) {
       setStatusMessage(`✓ ${updated.title} reactivated`)
     } else {
-      const period = updated.frequency === 'weekly' ? 'next week' : 'next month'
-      setStatusMessage(`✗ ${updated.title} paused from ${period}`)
+      setStatusMessage(`✗ ${updated.title} paused from next month`)
     }
+    setTimeout(() => setStatusMessage(''), 4000)
+  }
+
+  async function deleteExpense(expense: RecurringExpense) {
+    if (!confirm(`Delete "${expense.title}"?`)) return
+
+    const token = localStorage.getItem('access_token')
+    const response = await fetch(
+      `${API_URL}/recurring-expenses/${expense.id}`,
+      {
+        method: 'DELETE',
+        headers: { Authorization: `Bearer ${token}` },
+      }
+    )
+    if (!response.ok) {
+      const text = await response.text()
+      alert(`Failed to delete: ${text}`)
+      return
+    }
+    setExpenses((curr) => curr.filter((i) => i.id !== expense.id))
+    setStatusMessage(`✓ ${expense.title} deleted`)
     setTimeout(() => setStatusMessage(''), 4000)
   }
 
   const active = expenses.filter((e) => e.active)
   const inactive = expenses.filter((e) => !e.active)
-  const totalMonthly = active.reduce((sum, e) => {
-    return sum + (e.frequency === 'weekly' ? e.amount * 4.33 : e.amount)
-  }, 0)
+  const totalMonthly = active.reduce((sum, e) => sum + (e.amount || 0), 0)
 
   return (
     <>
@@ -579,6 +597,34 @@ export default function RecurringExpenses() {
           color: #ef4444;
         }
 
+        .card-buttons {
+          display: flex;
+          gap: 0.6rem;
+          margin-top: 1rem;
+        }
+
+        .delete-btn {
+          flex: 1;
+          padding: 0.7rem;
+          border-radius: 8px;
+          border: 1px solid rgba(239, 68, 68, 0.3);
+          background: rgba(239, 68, 68, 0.08);
+          color: #ef4444;
+          font-family: 'Space Mono', monospace;
+          font-size: 0.72rem;
+          font-weight: 700;
+          letter-spacing: 0.08em;
+          cursor: pointer;
+          transition: 0.2s;
+          text-transform: uppercase;
+        }
+
+        .delete-btn:hover {
+          background: rgba(239, 68, 68, 0.15);
+          border-color: rgba(239, 68, 68, 0.5);
+          color: #ff6b6b;
+        }
+
         .empty-state {
           text-align: center;
           padding: 3rem;
@@ -676,7 +722,6 @@ export default function RecurringExpenses() {
                     <label>Frequency</label>
                     <select value={frequency} onChange={(e) => setFrequency(e.target.value)}>
                       <option value="monthly">Monthly</option>
-                      <option value="weekly">Weekly</option>
                     </select>
                   </div>
                   <div className="field-group">
@@ -709,7 +754,7 @@ export default function RecurringExpenses() {
           )}
 
           {loading ? (
-            <div className="loading">// loading subscriptions...</div>
+            <div className="loading">loading subscriptions...</div>
           ) : (
             <>
               {/* ACTIVE */}
@@ -743,9 +788,14 @@ export default function RecurringExpenses() {
                               </p>
                             </div>
                           </div>
-                          <button className="toggle-btn deactivate" onClick={() => toggleStatus(expense)}>
-                            Pause Subscription
-                          </button>
+                          <div className="card-buttons">
+                            <button className="toggle-btn deactivate" onClick={() => toggleStatus(expense)}>
+                              Pause Subscription
+                            </button>
+                            <button className="delete-btn" onClick={() => deleteExpense(expense)}>
+                              Delete
+                            </button>
+                          </div>
                         </div>
                       )
                     })}
@@ -786,9 +836,14 @@ export default function RecurringExpenses() {
                               </p>
                             </div>
                           </div>
-                          <button className="toggle-btn" onClick={() => toggleStatus(expense)}>
-                            Reactivate
-                          </button>
+                          <div className="card-buttons">
+                            <button className="toggle-btn" onClick={() => toggleStatus(expense)}>
+                              Reactivate
+                            </button>
+                            <button className="delete-btn" onClick={() => deleteExpense(expense)}>
+                              Delete
+                            </button>
+                          </div>
                         </div>
                       )
                     })}
