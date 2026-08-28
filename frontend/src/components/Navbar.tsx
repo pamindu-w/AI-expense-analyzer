@@ -1,7 +1,14 @@
-import { Link, useLocation } from 'react-router-dom'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { logout } from '../services/api'
 
 function Navbar() {
   const { pathname } = useLocation()
+  const navigate = useNavigate()
+
+  function handleLogout() {
+    logout()
+    navigate('/login')
+  }
 
   return (
     <>
@@ -72,6 +79,13 @@ function Navbar() {
           border-radius: 1px;
         }
 
+        button.nav-link {
+          background: transparent;
+          border: none;
+          cursor: pointer;
+          font-family: inherit;
+        }
+
         @media (max-width: 500px) {
           .navbar { padding: 0 1rem; }
           .nav-link { padding: 0.4rem 0.6rem; font-size: 0.75rem; }
@@ -80,7 +94,7 @@ function Navbar() {
       `}</style>
 
       <nav className="navbar">
-        <Link to="/" className="nav-logo">
+        <Link to="/dashboard" className="nav-logo">
           spend<span>wise</span>
         </Link>
 
@@ -100,6 +114,9 @@ function Navbar() {
           <Link to="/recurring-expenses" className={`nav-link${pathname === '/recurring-expenses' ? ' active' : ''}`}>
             Recurring Expenses
           </Link>
+          <button className="nav-link nav-logout" onClick={handleLogout}>
+            Logout
+          </button>
         </div>
       </nav>
     </>

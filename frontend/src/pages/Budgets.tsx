@@ -28,7 +28,6 @@ export default function Budgets() {
   const [submitting, setSubmitting] = useState(false)
   const [category, setCategory] = useState('')
   const [limit, setLimit] = useState('')
-  const [month, setMonth] = useState('')
 
   const today = new Date()
   const currentMonth = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}`
@@ -63,10 +62,9 @@ export default function Budgets() {
     e.preventDefault()
     setSubmitting(true)
     try {
-      await createBudget({ category, limit: Number(limit), month })
+      await createBudget({ category, limit: Number(limit), month: currentMonth })
       setCategory('')
       setLimit('')
-      setMonth('')
       setFormOpen(false)
       loadBudgets()
     } catch (err) {
@@ -214,6 +212,16 @@ export default function Budgets() {
           color: rgba(228,228,240,0.3);
           margin-top: 0.5rem;
           letter-spacing: 0.05em;
+        }
+
+        .b-hint {
+          grid-column: 1 / -1;
+          font-size: 0.75rem;
+          color: rgba(228,228,240,0.4);
+          border: 1px dashed rgba(16,185,129,0.4);
+          border-radius: 8px;
+          padding: 0.7rem 0.9rem;
+          background: rgba(16,185,129,0.05);
         }
 
         .add-btn {
@@ -553,7 +561,7 @@ export default function Budgets() {
             <div>
               <p className="b-eyebrow">Spending Control</p>
               <h1 className="b-title">Budgets</h1>
-              <p className="b-subtitle">// track limits by category & month</p>
+              <p className="b-subtitle">// track limits by category — renews each month</p>
             </div>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <button className="btn-cancel" onClick={loadBudgets}>
@@ -569,11 +577,11 @@ export default function Budgets() {
           <div className="stats-row">
             <div className="stat-cell">
               <p className="stat-lbl">Total Budgeted</p>
-              <p className="stat-num">${totalBudgeted.toFixed(0)}</p>
+              <p className="stat-num">Rs {totalBudgeted.toFixed(0)}</p>
             </div>
             <div className="stat-cell">
               <p className="stat-lbl">Total Spent</p>
-              <p className="stat-num">${totalSpent.toFixed(0)}</p>
+              <p className="stat-num">Rs {totalSpent.toFixed(0)}</p>
             </div>
             <div className="stat-cell">
               <p className="stat-lbl">Over Budget</p>
@@ -600,7 +608,7 @@ export default function Budgets() {
                     </select>
                   </div>
                   <div className="field">
-                    <label>Limit ($)</label>
+                    <label>Limit (Rs)</label>
                     <input
                       type="number"
                       placeholder="500"
@@ -609,15 +617,7 @@ export default function Budgets() {
                       required
                     />
                   </div>
-                  <div className="field">
-                    <label>Month</label>
-                    <input
-                      type="month"
-                      value={month}
-                      onChange={(e) => setMonth(e.target.value)}
-                      required
-                    />
-                  </div>
+                  <p className="b-hint">This budget applies every month — it refreshes automatically when the month changes.</p>
                 </div>
                 <div className="form-actions">
                   <button type="submit" className="btn-submit" disabled={submitting}>
@@ -685,18 +685,18 @@ export default function Budgets() {
                       <div className="amounts-row">
                         <div className="amount-box">
                           <p className="amount-key">Limit</p>
-                          <p className="amount-val">${budget.limit}</p>
+                          <p className="amount-val">Rs {budget.limit}</p>
                         </div>
                         <div className="amount-box">
                           <p className="amount-key">Spent</p>
                           <p className="amount-val" style={{ color: barColor }}>
-                            ${displaySpent}
+                            Rs {displaySpent}
                           </p>
                         </div>
                         <div className="amount-box">
                           <p className="amount-key">Left</p>
                           <p className="amount-val" style={{ color: displayRemaining < 0 ? '#ef4444' : '#10b981' }}>
-                            ${Math.abs(displayRemaining)}
+                            Rs {Math.abs(displayRemaining)}
                           </p>
                         </div>
                       </div>
@@ -705,7 +705,7 @@ export default function Budgets() {
                         <div style={{ flex: 1 }}>
                           <div className="progress-label">
                             <span className="progress-pct">{displayPercentage}% used</span>
-                            <span className="progress-pct">${Math.max(budget.limit - displaySpent, 0)} left</span>
+                            <span className="progress-pct">Rs {Math.max(budget.limit - displaySpent, 0)} left</span>
                           </div>
                           <div className="progress-track">
                             <div

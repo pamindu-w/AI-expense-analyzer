@@ -20,7 +20,7 @@ function ExpenseItem({
       <div>
         <strong>{expense.title}</strong>
 
-        <p>${expense.amount.toFixed(2)}</p>
+        <p>Rs {expense.amount.toFixed(2)}</p>
 
         <span>{expense.category}</span>
 

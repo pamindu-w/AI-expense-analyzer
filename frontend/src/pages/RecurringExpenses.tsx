@@ -26,6 +26,7 @@ const CATEGORY_COLORS: Record<string, string> = {
 
 const FREQ_LABEL: Record<string, string> = {
   monthly: 'Monthly',
+  weekly: 'Weekly',
 }
 
 export default function RecurringExpenses() {
@@ -68,7 +69,7 @@ export default function RecurringExpenses() {
         title,
         amount: Number(amount),
         category,
-        frequency: 'monthly',
+        frequency,
         next_run: nextRun,
       }),
     })
@@ -668,7 +669,7 @@ export default function RecurringExpenses() {
           <div className="stats-strip">
             <div className="stat-block">
               <p className="stat-label">Monthly Burn</p>
-              <p className="stat-val">${totalMonthly.toFixed(0)}</p>
+              <p className="stat-val">Rs {totalMonthly.toFixed(0)}</p>
             </div>
             <div className="stat-block">
               <p className="stat-label">Active</p>
@@ -697,7 +698,7 @@ export default function RecurringExpenses() {
                     />
                   </div>
                   <div className="field-group">
-                    <label>Amount ($)</label>
+                    <label>Amount (Rs)</label>
                     <input
                       type="number"
                       placeholder="0.00"
@@ -722,6 +723,7 @@ export default function RecurringExpenses() {
                     <label>Frequency</label>
                     <select value={frequency} onChange={(e) => setFrequency(e.target.value)}>
                       <option value="monthly">Monthly</option>
+                      <option value="weekly">Weekly</option>
                     </select>
                   </div>
                   <div className="field-group">
@@ -775,7 +777,7 @@ export default function RecurringExpenses() {
                           </div>
                           <div className="card-title">{expense.title}</div>
                           <div className="card-category" style={{ color }}>{expense.category}</div>
-                          <div className="card-amount">${expense.amount.toFixed(2)}</div>
+                          <div className="card-amount">Rs {expense.amount.toFixed(2)}</div>
                           <div className="card-meta">
                             <div className="meta-item">
                               <p className="meta-key">Frequency</p>
@@ -821,7 +823,7 @@ export default function RecurringExpenses() {
                           </div>
                           <div className="card-title">{expense.title}</div>
                           <div className="card-category" style={{ color: 'rgba(226,226,240,0.4)' }}>{expense.category}</div>
-                          <div className="card-amount" style={{ color: 'rgba(226,226,240,0.4)' }}>${expense.amount.toFixed(2)}</div>
+                          <div className="card-amount" style={{ color: 'rgba(226,226,240,0.4)' }}>Rs {expense.amount.toFixed(2)}</div>
                           <div className="card-meta">
                             <div className="meta-item">
                               <p className="meta-key">Frequency</p>

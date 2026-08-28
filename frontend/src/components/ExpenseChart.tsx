@@ -40,7 +40,7 @@ const CustomTooltip = ({ active, payload }: any) => {
         boxShadow: `0 0 20px ${color}20`,
       }}>
         <p style={{ color: 'rgba(232,232,240,0.5)', fontSize: '0.7rem', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: '0.3rem' }}>{name}</p>
-        <p style={{ color: '#fff', fontSize: '1.1rem', fontFamily: "'Syne', sans-serif", fontWeight: 700 }}>${value.toFixed(2)}</p>
+        <p style={{ color: '#fff', fontSize: '1.1rem', fontFamily: "'Syne', sans-serif", fontWeight: 700 }}>Rs {value.toFixed(2)}</p>
       </div>
     )
   }
@@ -101,7 +101,7 @@ function ExpenseChart({ data }: Props) {
               fontWeight: 800,
               color: '#fff',
               lineHeight: 1,
-            }}>${total.toFixed(0)}</p>
+            }}>Rs {total.toFixed(0)}</p>
           </div>
 
           <ResponsiveContainer width="100%" height="100%">

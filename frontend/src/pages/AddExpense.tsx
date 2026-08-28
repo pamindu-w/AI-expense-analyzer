@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import Navbar from '../components/Navbar'
-import { addExpense } from '../services/api'
+import { addExpense, parseExpensePdf } from '../services/api'
 import { useNavigate, Link } from 'react-router-dom'
 
 const CATEGORIES = ['Food', 'Transport', 'Shopping', 'Bills', 'Entertainment', 'Other']
@@ -32,6 +32,10 @@ function AddExpense() {
   const [customCategory, setCustomCategory] = useState('')
   const [loading, setLoading] = useState(false)
 
+  const [pdfLoading, setPdfLoading] = useState(false)
+  const [pdfError, setPdfError] = useState('')
+  const [pdfFileName, setPdfFileName] = useState('')
+
   const handleSubmit = async (e: any) => {
     e.preventDefault()
     setLoading(true)
@@ -41,6 +45,23 @@ function AddExpense() {
       category: category === 'Other' ? customCategory : category,
     })
     navigate('/expenses')
+  }
+
+  const handlePdf = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file: File | undefined = e.target.files?.[0]
+    if (!file) return
+    setPdfLoading(true)
+    setPdfError('')
+    setPdfFileName(file.name)
+    try {
+      const result = await parseExpensePdf(file)
+      setTitle(result.title || title)
+      setAmount(String(result.amount))
+    } catch (err) {
+      setPdfError(err instanceof Error ? err.message : 'Could not parse this PDF.')
+    } finally {
+      setPdfLoading(false)
+    }
   }
 
   const selectedColor = CATEGORY_COLORS[category] || 'rgba(255,255,255,0.15)'
@@ -202,7 +223,7 @@ function AddExpense() {
           pointer-events: none;
         }
         .amount-wrapper .field-input {
-          padding-left: 1.8rem;
+          padding-left: 2.8rem;
         }
 
         /* Category pills */
@@ -253,6 +274,62 @@ function AddExpense() {
           height: 1px;
           background: rgba(255,255,255,0.06);
           margin: 0.2rem 0;
+        }
+
+        /* PDF import */
+        .pdf-section {
+          border: 1px dashed rgba(255,255,255,0.14);
+          border-radius: 10px;
+          padding: 1.1rem 1.2rem;
+          background: rgba(255,255,255,0.02);
+          transition: border-color 0.2s, background 0.2s;
+        }
+        .pdf-section.has-file {
+          border-style: solid;
+          border-color: rgba(16,185,129,0.45);
+          background: rgba(16,185,129,0.04);
+        }
+        .pdf-label {
+          display: flex;
+          align-items: center;
+          gap: 0.5rem;
+          font-size: 0.68rem;
+          font-weight: 500;
+          letter-spacing: 0.18em;
+          text-transform: uppercase;
+          color: rgba(232,232,240,0.4);
+          margin-bottom: 0.7rem;
+        }
+        .pdf-upload-btn {
+          display: inline-flex;
+          align-items: center;
+          gap: 0.5rem;
+          padding: 0.7rem 1rem;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 8px;
+          color: #e8e8f0;
+          font-family: 'Inconsolata', monospace;
+          font-size: 0.85rem;
+          cursor: pointer;
+          transition: all 0.18s ease;
+        }
+        .pdf-upload-btn:hover { background: rgba(255,255,255,0.09); }
+        .pdf-upload-btn.loading { opacity: 0.6; cursor: wait; }
+        .pdf-filename {
+          margin-top: 0.6rem;
+          font-size: 0.8rem;
+          color: rgba(16,185,129,0.9);
+        }
+        .pdf-error {
+          margin-top: 0.6rem;
+          font-size: 0.8rem;
+          color: #f87171;
+        }
+        .pdf-hint {
+          margin-top: 0.5rem;
+          font-size: 0.72rem;
+          color: rgba(232,232,240,0.3);
         }
 
         /* Submit button */
@@ -319,7 +396,7 @@ function AddExpense() {
               <div className="field">
                 <label className="field-label">Amount</label>
                 <div className="amount-wrapper">
-                  <span className="amount-prefix">$</span>
+                  <span className="amount-prefix">Rs</span>
                   <input
                     className="field-input"
                     type="number"
@@ -332,6 +409,33 @@ function AddExpense() {
                     style={{ '--accent-color': selectedColor } as any}
                   />
                 </div>
+              </div>
+
+              {/* PDF import */}
+              <div className={`pdf-section${pdfFileName ? ' has-file' : ''}`}>
+                <label className="pdf-label">📄 Import from PDF</label>
+                <input
+                  id="pdf-upload"
+                  type="file"
+                  accept="application/pdf"
+                  style={{ display: 'none' }}
+                  onChange={handlePdf}
+                />
+                <button
+                  type="button"
+                  className={`pdf-upload-btn${pdfLoading ? ' loading' : ''}`}
+                  onClick={() => document.getElementById('pdf-upload')?.click()}
+                  disabled={pdfLoading}
+                >
+                  {pdfLoading ? '⏳ Extracting…' : '⬆️ Upload PDF'}
+                </button>
+                {pdfFileName && !pdfError && (
+                  <p className="pdf-filename">✓ {pdfFileName} — amount detected</p>
+                )}
+                {pdfError && (
+                  <p className="pdf-error">⚠ {pdfError}</p>
+                )}
+                <p className="pdf-hint">Upload a receipt or invoice to auto-fill the amount and title above.</p>
               </div>
 
               <div className="form-divider" />

@@ -75,7 +75,28 @@ function groupExpensesByMonth(expenses: Expense[]) {
     )
 }
 
-function ExpenseList() {
+type ExpenseListProps = {
+  // How many months back to show, starting with the current month (1 = this month only).
+  months?: number
+  // If set, only show this many most-recent expenses.
+  limit?: number
+}
+
+function monthKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`
+}
+
+function recentMonths(count: number): string[] {
+  const now = new Date()
+  const keys: string[] = []
+  for (let i = 0; i < count; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1)
+    keys.push(monthKey(d))
+  }
+  return keys
+}
+
+function ExpenseList({ months = 0, limit }: ExpenseListProps) {
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editForm, setEditForm] = useState({ title: '', amount: '', category: '' })
@@ -93,7 +114,15 @@ function ExpenseList() {
     }
   }
 
-  const groupedExpenses = groupExpensesByMonth(expenses)
+  const visibleExpenses = (() => {
+    if (months === 0) return expenses
+    const allowed = new Set(recentMonths(months))
+    const filtered = expenses.filter((e) => allowed.has(monthKey(new Date(e.created_at))))
+    if (typeof limit === 'number' && limit > 0) return filtered.slice(0, limit)
+    return filtered
+  })()
+
+  const groupedExpenses = groupExpensesByMonth(visibleExpenses)
 
   const handleDelete = async (id: number) => {
     setDeletingId(id)
@@ -342,7 +371,7 @@ function ExpenseList() {
                 <div>
                   <h2 className="month-title">{group.label}</h2>
                   <p className="month-summary">
-                    {group.items.length} transactions · ${group.total.toFixed(2)}
+                    {group.items.length} transactions · Rs {group.total.toFixed(2)}
                   </p>
                 </div>
               </div>
@@ -405,7 +434,7 @@ function ExpenseList() {
                       <>
                         <td>{formatExpenseDate(expense.created_at)}</td>
                         <td className="el-title">{expense.title}</td>
-                        <td className="el-amount">${expense.amount.toFixed(2)}</td>
+                        <td className="el-amount">Rs {expense.amount.toFixed(2)}</td>
                         <td>
                           <span
                             className="el-badge"

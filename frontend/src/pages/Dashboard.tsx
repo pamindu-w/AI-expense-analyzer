@@ -10,7 +10,8 @@ import {
   CartesianGrid,
 } from 'recharts'
 
-import { getExpenses, API_URL } from '../services/api'
+import { getExpenses, getAiInsights, API_URL } from '../services/api'
+import type { AiInsights } from '../services/api'
 import Navbar from '../components/Navbar'
 import ExpenseChart from '../components/ExpenseChart'
 import ExpenseList from '../components/ExpenseList'
@@ -73,9 +74,9 @@ export default function Dashboard() {
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [loading, setLoading] = useState(true)
   const [username, setUsername] = useState<string>('')
-  // const [aiInsights, setAiInsights] = useState('')
-  // const [aiLoading, setAiLoading] = useState(true)
   const [budgetAlerts, setBudgetAlerts] = useState<any[]>([])
+  const [aiInsights, setAiInsights] = useState<AiInsights | null>(null)
+  const [aiLoading, setAiLoading] = useState(true)
 
   useEffect(() => {
     const token = localStorage.getItem('access_token')
@@ -100,22 +101,13 @@ export default function Dashboard() {
       })
       .finally(() => setLoading(false))
 
-//     if (token) {
-//       fetch('http://localhost:8000/expenses/ai-insights', {
-//       headers: {
-//         Authorization: `Bearer ${token}`,
-//     },
-//   })
-//     .then((res) => res.json())
-//     .then((data) => {
-//       setAiInsights(data.insights)
-//       setAiLoading(false)
-//     })
-//     .catch(() => {
-//       setAiInsights('Unable to generate AI insights.')
-//       setAiLoading(false)
-//     })
-// }
+    getAiInsights()
+      .then((data) => setAiInsights(data.insights ?? null))
+      .catch((err) => {
+        console.warn('Failed to load AI insights:', err)
+        setAiInsights(null)
+      })
+      .finally(() => setAiLoading(false))
 
       if (token) {
         fetch(`${API_URL}/budgets/progress`, {
@@ -173,27 +165,28 @@ export default function Dashboard() {
     }),
   )
 
+  const MONTH_NAMES = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ]
+
   const monthlyTotals: Record<string, number> = {}
   expenses.forEach((expense) => {
     const date = new Date(expense.created_at)
-    const month = date.toLocaleString('default', { month: 'short' })
-    monthlyTotals[month] = (monthlyTotals[month] || 0) + expense.amount
+    const key = `${date.getFullYear()}-${date.getMonth()}`
+    monthlyTotals[key] = (monthlyTotals[key] || 0) + expense.amount
   })
 
-  const monthlyChartData = Object.entries(monthlyTotals)
-    .filter(([month]) => {
-      // Only show months up to and including current month
-      const monthNames = [
-        'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-      ]
-      const monthIndex = monthNames.indexOf(month)
-      return monthIndex >= 0 && monthIndex <= today.getMonth()
+  // Build chronological bars from January up to the current month, filling
+  // any months that have no expenses with 0 so the chart stays in order.
+  const monthlyChartData: { month: string; total: number }[] = []
+  for (let m = 0; m <= today.getMonth(); m++) {
+    const key = `${today.getFullYear()}-${m}`
+    monthlyChartData.push({
+      month: MONTH_NAMES[m],
+      total: monthlyTotals[key] || 0,
     })
-    .map(([month, total]) => ({
-      month,
-      total,
-    }))
+  }
 
   return (
     <>
@@ -519,7 +512,7 @@ export default function Dashboard() {
           <div className="stats-grid">
             <StatCard
               title="Spent this month"
-              value={`$${totalExpenses.toFixed(2)}`}
+              value={`Rs ${totalExpenses.toFixed(2)}`}
               sub={currentMonthLabel.replace('MONTH - ', '')}
               accent="#f59e0b"
               delay="0.05s"
@@ -533,7 +526,7 @@ export default function Dashboard() {
             />
             <StatCard
               title="Largest Expense"
-              value={`$${largestExpense.toFixed(2)}`}
+              value={`Rs ${largestExpense.toFixed(2)}`}
               sub="current month"
               accent="#ec4899"
               delay="0.15s"
@@ -626,7 +619,7 @@ export default function Dashboard() {
                           {isExceeded ? (
                             <>
                               ⚠ You exceeded your{' '}
-                              {budget.category} budget by $
+                              {budget.category} budget by Rs
                               {Math.abs(
                                 budget.remaining
                               ).toFixed(2)}
@@ -675,7 +668,7 @@ export default function Dashboard() {
                             <span className="cat-dot" style={{ background: color }} />
                             {item.name}
                           </span>
-                          <span>${item.value.toFixed(2)}</span>
+                          <span>Rs {item.value.toFixed(2)}</span>
                         </div>
                         <div className="category-bar-track">
                           <div
@@ -714,32 +707,136 @@ export default function Dashboard() {
             )}
           </div>
 
-          {/* AI INSIGHTS
+          {/* AI INSIGHTS */}
           <div className="panel" style={{ marginBottom: '2rem' }}>
             <p className="panel-label">AI Financial Insights</p>
 
             {aiLoading ? (
-              <div className="loading-state">
-                Generating AI insights…
-              </div>
-            ) : (
+              <div className="loading-state">Generating AI insights…</div>
+            ) : aiInsights && aiInsights.error && !aiInsights.advice ? (
               <div
                 style={{
-                  lineHeight: '1.9',
-                  fontSize: '0.95rem',
-                  color: 'rgba(232,232,240,0.82)',
-                  whiteSpace: 'pre-wrap',
+                  lineHeight: '1.7',
+                  fontSize: '0.9rem',
+                  color: 'rgba(248,113,113,0.9)',
                 }}
               >
-                {aiInsights}
+                {aiInsights.error}
               </div>
+            ) : aiInsights ? (
+              <div style={{ lineHeight: '1.9', fontSize: '0.95rem' }}>
+                {aiInsights.trends && (
+                  <div style={{ marginBottom: '1.1rem' }}>
+                    <p
+                      style={{
+                        color: '#a78bfa',
+                        fontWeight: 700,
+                        letterSpacing: '0.06em',
+                        fontSize: '0.72rem',
+                        textTransform: 'uppercase',
+                        marginBottom: '0.35rem',
+                      }}
+                    >
+                      Trends
+                    </p>
+                    <p style={{ color: 'rgba(232,232,240,0.82)' }}>
+                      {aiInsights.trends}
+                    </p>
+                  </div>
+                )}
+
+                {aiInsights.topCategories &&
+                  aiInsights.topCategories.length > 0 && (
+                    <div style={{ marginBottom: '1.1rem' }}>
+                      <p
+                        style={{
+                          color: '#a78bfa',
+                          fontWeight: 700,
+                          letterSpacing: '0.06em',
+                          fontSize: '0.72rem',
+                          textTransform: 'uppercase',
+                          marginBottom: '0.35rem',
+                        }}
+                      >
+                        Top Categories
+                      </p>
+                      <div
+                        style={{
+                          display: 'flex',
+                          flexWrap: 'wrap',
+                          gap: '0.5rem',
+                        }}
+                      >
+                        {aiInsights.topCategories.map((cat) => (
+                          <span
+                            key={cat}
+                            style={{
+                              background: 'rgba(167,139,250,0.12)',
+                              border: '1px solid rgba(167,139,250,0.25)',
+                              color: '#c4b5fd',
+                              padding: '0.25rem 0.7rem',
+                              borderRadius: '999px',
+                              fontSize: '0.8rem',
+                            }}
+                          >
+                            {cat}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                {aiInsights.anomalies && (
+                  <div style={{ marginBottom: '1.1rem' }}>
+                    <p
+                      style={{
+                        color: '#a78bfa',
+                        fontWeight: 700,
+                        letterSpacing: '0.06em',
+                        fontSize: '0.72rem',
+                        textTransform: 'uppercase',
+                        marginBottom: '0.35rem',
+                      }}
+                    >
+                      Notable Spending
+                    </p>
+                    <p style={{ color: 'rgba(232,232,240,0.82)' }}>
+                      {aiInsights.anomalies}
+                    </p>
+                  </div>
+                )}
+
+                {aiInsights.advice && (
+                  <div>
+                    <p
+                      style={{
+                        color: '#34d399',
+                        fontWeight: 700,
+                        letterSpacing: '0.06em',
+                        fontSize: '0.72rem',
+                        textTransform: 'uppercase',
+                        marginBottom: '0.35rem',
+                      }}
+                    >
+                      Saving Advice
+                    </p>
+                    <p style={{ color: 'rgba(232,232,240,0.82)' }}>
+                      {aiInsights.advice}
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <p style={{ color: 'rgba(232,232,240,0.6)' }}>
+                Unable to load AI insights.
+              </p>
             )}
-          </div> */}
+          </div>
 
           {/* RECENT EXPENSES */}
           <div className="list-panel">
             <p className="panel-label">Recent Expenses</p>
-            <ExpenseList />
+            <ExpenseList months={1} limit={5} />
           </div>
         </div>
       </div>
