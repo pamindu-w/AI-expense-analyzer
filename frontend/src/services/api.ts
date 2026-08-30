@@ -5,7 +5,20 @@ export const isAuthenticated = (): boolean =>
 
 export const logout = (): void => {
   localStorage.removeItem('access_token')
+  cachedWeeklyDigest = null
+  pendingWeeklyDigest = null
 }
+
+let cachedWeeklyDigest: {
+  digest: Digest
+  period_key: string
+  created_at: string | null
+} | null = null
+let pendingWeeklyDigest: Promise<{
+  digest: Digest
+  period_key: string
+  created_at: string | null
+}> | null = null
 
 // Helper function to get the authorization header
 const getAuthHeader = (): Record<string, string> => {
@@ -184,6 +197,200 @@ export type AiInsights = {
   error?: string
 }
 
+export type ChatMessage = {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export const getChatHistory = async (): Promise<ChatMessage[]> => {
+  const response = await fetch(`${API_URL}/chat/history`, {
+    headers: getAuthHeader(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to fetch chat history: ${response.status} ${response.statusText} - ${text}`)
+  }
+  return response.json()
+}
+
+export const clearChatHistory = async (): Promise<void> => {
+  const response = await fetch(`${API_URL}/chat/history`, {
+    method: 'DELETE',
+    headers: getAuthHeader(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to clear chat history: ${response.status} ${response.statusText} - ${text}`)
+  }
+}
+
+export type StreamChatHandlers = {
+  onChunk: (text: string) => void
+  onDone: (followUps: string[]) => void
+  onError: (message: string) => void
+}
+
+export const streamChat = async (
+  message: string,
+  handlers: StreamChatHandlers,
+): Promise<void> => {
+  const response = await fetch(`${API_URL}/chat/stream`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeader(),
+    },
+    body: JSON.stringify({ message }),
+  })
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`
+    try {
+      const data = await response.json()
+      if (data?.detail) detail = data.detail
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    throw new Error(detail)
+  }
+
+  if (!response.body) {
+    throw new Error('Streaming not supported in this browser')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const frames = buffer.split('\n\n')
+    buffer = frames.pop() ?? ''
+
+    for (const frame of frames) {
+      const dataLine = frame
+        .split('\n')
+        .find((line) => line.startsWith('data:'))
+      if (!dataLine) continue
+
+      const payload = dataLine.slice(5).trim()
+      if (!payload) continue
+
+      let event: { type: string; text?: string; follow_ups?: string[]; message?: string }
+      try {
+        event = JSON.parse(payload)
+      } catch {
+        continue
+      }
+
+      if (event.type === 'chunk' && event.text) {
+        handlers.onChunk(event.text)
+      } else if (event.type === 'done') {
+        handlers.onDone(event.follow_ups ?? [])
+      } else if (event.type === 'error') {
+        handlers.onError(event.message ?? 'Something went wrong.')
+      }
+    }
+  }
+}
+
+export const deleteAccount = async (password: string): Promise<{ success: boolean }> => {
+  const response = await fetch(`${API_URL}/account/delete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...getAuthHeader(),
+    },
+    body: JSON.stringify({ password }),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to delete account: ${response.status} ${response.statusText} - ${text}`)
+  }
+  return response.json()
+}
+
+export const forgotPassword = async (
+  email: string,
+): Promise<{ message: string; dev_link?: string }> => {
+  const response = await fetch(`${API_URL}/forgot-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to request reset: ${response.status} ${response.statusText} - ${text}`)
+  }
+  return response.json()
+}
+
+export const resetPassword = async (
+  token: string,
+  newPassword: string,
+): Promise<{ message: string }> => {
+  const response = await fetch(`${API_URL}/reset-password`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token, new_password: newPassword }),
+  })
+  if (!response.ok) {
+    let detail = `${response.status} ${response.statusText}`
+    try {
+      const data = await response.json()
+      if (data?.detail) detail = data.detail
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    throw new Error(detail)
+  }
+  return response.json()
+}
+
+export type Digest = {
+  title: string
+  trends: string
+  topCategories: string[]
+  advice: string
+  error?: string
+}
+
+export type WeeklyDigestData = {
+  digest: Digest
+  period_key: string
+  created_at: string | null
+}
+
+export const getCachedWeeklyDigest = (): WeeklyDigestData | null =>
+  cachedWeeklyDigest
+
+export const getWeeklyDigest = async (): Promise<WeeklyDigestData> => {
+  if (cachedWeeklyDigest) return cachedWeeklyDigest
+  if (pendingWeeklyDigest) return pendingWeeklyDigest
+
+  pendingWeeklyDigest = fetch(`${API_URL}/digest`, {
+    headers: getAuthHeader(),
+  })
+    .then(async (response) => {
+      if (!response.ok) {
+        const text = await response.text()
+        throw new Error(
+          `Failed to fetch weekly digest: ${response.status} ${response.statusText} - ${text}`,
+        )
+      }
+      const data = (await response.json()) as WeeklyDigestData
+      cachedWeeklyDigest = data
+      return data
+    })
+    .finally(() => {
+      pendingWeeklyDigest = null
+    })
+
+  return pendingWeeklyDigest
+}
+
 export const getAiInsights = async (): Promise<{ insights: AiInsights }> => {
   const response = await fetch(`${API_URL}/expenses/ai-insights`, {
     headers: getAuthHeader(),
@@ -224,6 +431,67 @@ export type CsvExpense = {
   amount: number
   category: string
   created_at: string
+}
+
+export type NotificationItem = {
+  id: number
+  type: string
+  title: string
+  message: string
+  category: string | null
+  month: string | null
+  amount: number | null
+  signature: string
+  read: boolean
+  created_at: string
+}
+
+export const getNotifications = async (): Promise<{
+  notifications: NotificationItem[]
+  unread_count: number
+}> => {
+  const response = await fetch(`${API_URL}/notifications`, {
+    headers: getAuthHeader(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to fetch notifications: ${response.status} ${response.statusText} - ${text}`)
+  }
+  return response.json()
+}
+
+export const getUnreadNotificationsCount = async (): Promise<number> => {
+  const response = await fetch(`${API_URL}/notifications/unread-count`, {
+    headers: getAuthHeader(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to fetch unread count: ${response.status} ${response.statusText} - ${text}`)
+  }
+  const data = await response.json()
+  return data.count ?? 0
+}
+
+export const markNotificationRead = async (id: number): Promise<void> => {
+  const response = await fetch(`${API_URL}/notifications/${id}/read`, {
+    method: 'PUT',
+    headers: getAuthHeader(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to mark notification read: ${response.status} ${response.statusText} - ${text}`)
+  }
+}
+
+export const markAllNotificationsRead = async (): Promise<void> => {
+  const response = await fetch(`${API_URL}/notifications/read-all`, {
+    method: 'PUT',
+    headers: getAuthHeader(),
+  })
+  if (!response.ok) {
+    const text = await response.text()
+    throw new Error(`Failed to mark all notifications read: ${response.status} ${response.statusText} - ${text}`)
+  }
 }
 
 // Build a styled PDF table of expenses and trigger a browser download.

@@ -561,7 +561,6 @@ export default function Budgets() {
             <div>
               <p className="b-eyebrow">Spending Control</p>
               <h1 className="b-title">Budgets</h1>
-              <p className="b-subtitle">// track limits by category — renews each month</p>
             </div>
             <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap' }}>
               <button className="btn-cancel" onClick={loadBudgets}>
@@ -592,7 +591,7 @@ export default function Budgets() {
           {/* FORM */}
           {formOpen && (
             <div className="form-panel">
-              <h3>// Set New Budget</h3>
+              <h3>Set New Budget</h3>
               <form onSubmit={handleCreateBudget}>
                 <div className="form-grid">
                   <div className="field">
@@ -632,9 +631,9 @@ export default function Budgets() {
           )}
 
           {loading ? (
-            <div className="loading">// loading budgets...</div>
+            <div className="loading">loading budgets...</div>
           ) : budgets.length === 0 ? (
-            <div className="empty-state">// no budgets yet — create one above</div>
+            <div className="empty-state">no budgets yet — create one above</div>
           ) : (
             <>
               <p className="section-label">Budget Overview — {budgets.length} active</p>

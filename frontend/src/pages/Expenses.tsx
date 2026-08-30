@@ -417,8 +417,8 @@ function Expenses() {
           <div className="exp-panel">
             <div className="exp-panel-top" />
             <div className="exp-panel-body">
-              <p className="panel-label">Records — This Month & Previous Month</p>
-              <ExpenseList months={2} />
+              <p className="panel-label">Records</p>
+              <ExpenseList months={0} showFilters />
             </div>
           </div>
         </div>

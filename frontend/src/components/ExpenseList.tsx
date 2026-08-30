@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { getExpenses, deleteExpense, updateExpense } from '../services/api'
 
 type Expense = {
@@ -80,6 +80,18 @@ type ExpenseListProps = {
   months?: number
   // If set, only show this many most-recent expenses.
   limit?: number
+  // If true, show the search + filter toolbar.
+  showFilters?: boolean
+}
+
+type Filters = {
+  search: string
+  category: string
+  from: string
+  to: string
+  min: string
+  max: string
+  sort: string
 }
 
 function monthKey(date: Date): string {
@@ -96,11 +108,20 @@ function recentMonths(count: number): string[] {
   return keys
 }
 
-function ExpenseList({ months = 0, limit }: ExpenseListProps) {
+function ExpenseList({ months = 0, limit, showFilters = false }: ExpenseListProps) {
   const [expenses, setExpenses] = useState<Expense[]>([])
   const [editingId, setEditingId] = useState<number | null>(null)
   const [editForm, setEditForm] = useState({ title: '', amount: '', category: '' })
   const [deletingId, setDeletingId] = useState<number | null>(null)
+  const [filters, setFilters] = useState<Filters>({
+    search: '',
+    category: 'All',
+    from: '',
+    to: '',
+    min: '',
+    max: '',
+    sort: 'newest',
+  })
 
   useEffect(() => { loadExpenses() }, [])
 
@@ -114,13 +135,65 @@ function ExpenseList({ months = 0, limit }: ExpenseListProps) {
     }
   }
 
-  const visibleExpenses = (() => {
-    if (months === 0) return expenses
-    const allowed = new Set(recentMonths(months))
-    const filtered = expenses.filter((e) => allowed.has(monthKey(new Date(e.created_at))))
-    if (typeof limit === 'number' && limit > 0) return filtered.slice(0, limit)
-    return filtered
-  })()
+  const filteredExpenses = useMemo(() => {
+    const q = filters.search.trim().toLowerCase()
+    let result = expenses.filter((e) => {
+      if (q && !`${e.title} ${e.category}`.toLowerCase().includes(q)) return false
+      if (filters.category !== 'All' && e.category !== filters.category) return false
+      const date = new Date(e.created_at)
+      if (filters.from && date < new Date(filters.from + 'T00:00:00')) return false
+      if (filters.to && date > new Date(filters.to + 'T23:59:59')) return false
+      const min = Number(filters.min)
+      const max = Number(filters.max)
+      if (filters.min !== '' && !Number.isNaN(min) && e.amount < min) return false
+      if (filters.max !== '' && !Number.isNaN(max) && e.amount > max) return false
+      return true
+    })
+
+    switch (filters.sort) {
+      case 'oldest':
+        result = [...result].sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+        break
+      case 'amount-desc':
+        result = [...result].sort((a, b) => b.amount - a.amount)
+        break
+      case 'amount-asc':
+        result = [...result].sort((a, b) => a.amount - b.amount)
+        break
+      default:
+        result = [...result].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+    }
+    return result
+  }, [expenses, filters])
+
+  const visibleExpenses = useMemo(() => {
+    if (!showFilters) {
+      if (months === 0) return filteredExpenses
+      const allowed = new Set(recentMonths(months))
+      const filtered = filteredExpenses.filter((e) => allowed.has(monthKey(new Date(e.created_at))))
+      if (typeof limit === 'number' && limit > 0) return filtered.slice(0, limit)
+      return filtered
+    }
+    return filteredExpenses
+  }, [filteredExpenses, showFilters, months, limit])
+
+  const isFiltering = showFilters && (
+    filters.search !== '' ||
+    filters.category !== 'All' ||
+    filters.from !== '' ||
+    filters.to !== '' ||
+    filters.min !== '' ||
+    filters.max !== '' ||
+    filters.sort !== 'newest'
+  )
+
+  const clearFilters = () => {
+    setFilters({ search: '', category: 'All', from: '', to: '', min: '', max: '', sort: 'newest' })
+  }
+
+  const setFilter = (key: keyof Filters, value: string) => {
+    setFilters((f) => ({ ...f, [key]: value }))
+  }
 
   const groupedExpenses = groupExpensesByMonth(visibleExpenses)
 
@@ -352,6 +425,69 @@ function ExpenseList({ months = 0, limit }: ExpenseListProps) {
         .el-select:focus { border-color: #f59e0b; }
         .el-select option { background: #0e0e1a; }
 
+        /* Filter toolbar */
+        .filter-bar {
+          display: grid;
+          grid-template-columns: 2fr 1fr 1fr 1fr;
+          gap: 0.6rem;
+          padding: 1rem 0 1.2rem;
+          border-bottom: 1px solid rgba(255,255,255,0.06);
+          margin-bottom: 1.4rem;
+        }
+        .filter-field { display: flex; flex-direction: column; gap: 0.3rem; }
+        .filter-field label {
+          font-size: 0.62rem;
+          letter-spacing: 0.14em;
+          text-transform: uppercase;
+          color: rgba(232,232,240,0.4);
+        }
+        .filter-input, .filter-select {
+          width: 100%;
+          background: rgba(255,255,255,0.05);
+          border: 1px solid rgba(255,255,255,0.1);
+          border-radius: 6px;
+          padding: 0.5rem 0.6rem;
+          color: #e8e8f0;
+          font-family: 'Inconsolata', monospace;
+          font-size: 0.85rem;
+          outline: none;
+          transition: border-color 0.2s;
+        }
+        .filter-input:focus, .filter-select:focus { border-color: #f59e0b; }
+        .filter-select option { background: #0e0e1a; }
+        .filter-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 0.6rem;
+        }
+        .filter-actions {
+          display: flex;
+          align-items: flex-end;
+          justify-content: space-between;
+          gap: 0.6rem;
+        }
+        .filter-count {
+          font-size: 0.75rem;
+          color: rgba(232,232,240,0.4);
+          padding-bottom: 0.5rem;
+        }
+        .filter-clear {
+          background: rgba(245,158,11,0.1);
+          border: 1px solid rgba(245,158,11,0.3);
+          color: #fcd34d;
+          font-family: 'Inconsolata', monospace;
+          font-size: 0.72rem;
+          padding: 0.45rem 0.9rem;
+          border-radius: 6px;
+          cursor: pointer;
+          transition: background 0.15s;
+        }
+        .filter-clear:hover { background: rgba(245,158,11,0.2); }
+
+        @media (max-width: 700px) {
+          .filter-bar { grid-template-columns: 1fr 1fr; }
+        }
+
         @media (max-width: 600px) {
           .el-table th:nth-child(3),
           .el-table td:nth-child(3) { display: none; }
@@ -359,6 +495,100 @@ function ExpenseList({ months = 0, limit }: ExpenseListProps) {
       `}</style>
 
       <div className="el-wrap">
+        {showFilters && (
+          <div className="filter-bar">
+            <div className="filter-field">
+              <label>Search</label>
+              <input
+                className="filter-input"
+                type="text"
+                placeholder="title or category…"
+                value={filters.search}
+                onChange={(e) => setFilter('search', e.target.value)}
+              />
+            </div>
+
+            <div className="filter-field">
+              <label>Category</label>
+              <select
+                className="filter-select"
+                value={filters.category}
+                onChange={(e) => setFilter('category', e.target.value)}
+              >
+                <option value="All">All</option>
+                {CATEGORIES.map((cat) => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+            </div>
+
+            <div className="filter-field">
+              <label>Date range</label>
+              <div className="filter-row">
+                <input
+                  className="filter-input"
+                  type="date"
+                  value={filters.from}
+                  onChange={(e) => setFilter('from', e.target.value)}
+                />
+                <input
+                  className="filter-input"
+                  type="date"
+                  value={filters.to}
+                  onChange={(e) => setFilter('to', e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="filter-field">
+              <label>Amount range</label>
+              <div className="filter-row">
+                <input
+                  className="filter-input"
+                  type="number"
+                  min="0"
+                  placeholder="min"
+                  value={filters.min}
+                  onChange={(e) => setFilter('min', e.target.value)}
+                />
+                <input
+                  className="filter-input"
+                  type="number"
+                  min="0"
+                  placeholder="max"
+                  value={filters.max}
+                  onChange={(e) => setFilter('max', e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="filter-actions">
+              <select
+                className="filter-select"
+                style={{ width: 'auto' }}
+                value={filters.sort}
+                onChange={(e) => setFilter('sort', e.target.value)}
+              >
+                <option value="newest">Newest first</option>
+                <option value="oldest">Oldest first</option>
+                <option value="amount-desc">Amount: high → low</option>
+                <option value="amount-asc">Amount: low → high</option>
+              </select>
+              {isFiltering && (
+                <button className="filter-clear" onClick={clearFilters}>
+                  Clear filters
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {showFilters && (
+          <p className="filter-count">
+            Showing {visibleExpenses.length} of {expenses.length} transactions
+          </p>
+        )}
+
         {groupedExpenses.length === 0 ? (
           <div className="el-empty">
             <span className="el-empty-icon">◎</span>
