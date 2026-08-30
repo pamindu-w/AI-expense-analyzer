@@ -1,8 +1,10 @@
 from fastapi import FastAPI, HTTPException, Header, UploadFile, File
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from dotenv import load_dotenv
 import os
+import json
 import logging
 
 # Load environment variables (DATABASE_URL) before importing Prisma
@@ -16,8 +18,12 @@ from datetime import datetime, timedelta
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from app.ai_service import ai_available, generate_expense_insights
+from app.ai_service import ai_available, generate_expense_insights, chat_reply_stream, generate_follow_ups
+from app.budget_service import compute_budget_progress
+from app.notifications import check_and_create
 from app.pdf_service import extract_from_pdf, PdfParseError
+from app.email_service import send_email, email_configured
+from app.digest_service import get_or_create_weekly_digest
 
 app = FastAPI()
 
@@ -72,6 +78,8 @@ db = Prisma()
 SECRET_KEY = os.getenv("SECRET_KEY", "SECRET123")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60*24
+RESET_TOKEN_EXPIRE_MINUTES = 30
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 pwd_context = CryptContext(
     schemes=["pbkdf2_sha256"],
@@ -164,6 +172,23 @@ class UserCreate(BaseModel):
 class UserLogin(BaseModel):
     email: EmailStr
     password: str
+
+
+class ChatMessage(BaseModel):
+    message: str
+
+
+class AccountDelete(BaseModel):
+    password: str
+
+
+class ForgotPassword(BaseModel):
+    email: EmailStr
+
+
+class ResetPassword(BaseModel):
+    token: str
+    new_password: str
 
 
 # =========================
@@ -310,6 +335,117 @@ async def validate_user(authorization: str | None = Header(None, alias="Authoriz
 
 
 # =========================
+# ACCOUNT & PASSWORD ROUTES
+# =========================
+
+@app.post("/account/delete")
+async def delete_account(
+    payload: AccountDelete,
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    if not verify_password(payload.password, user.hashed_password):
+        raise HTTPException(status_code=403, detail="Password is incorrect")
+
+    await db.user.delete(where={"id": user.id})
+
+    return {"success": True}
+
+
+@app.post("/forgot-password")
+async def forgot_password(payload: ForgotPassword):
+    generic = {"message": "If that email exists, a reset link has been sent."}
+
+    user = await db.user.find_unique(
+        where={"email": payload.email}
+    )
+
+    if not user:
+        return generic
+
+    token = jwt.encode(
+        {
+            "sub": payload.email,
+            "purpose": "password_reset",
+            "exp": datetime.utcnow() + timedelta(
+                minutes=RESET_TOKEN_EXPIRE_MINUTES
+            ),
+        },
+        SECRET_KEY,
+        algorithm=ALGORITHM,
+    )
+
+    reset_link = f"{FRONTEND_URL}/reset-password?token={token}"
+    html = (
+        "<p>Hi there,</p>"
+        f"<p>Use the link below to reset your SpendWise password. It expires "
+        f"in {RESET_TOKEN_EXPIRE_MINUTES} minutes.</p>"
+        f'<p style="margin:1.4rem 0;">'
+        f'<a href="{reset_link}" style="background:#f59e0b;color:#080810;'
+        f'padding:0.6rem 1.2rem;border-radius:6px;text-decoration:none;'
+        f'font-weight:bold;">Reset password</a></p>'
+        f'<p>Or copy this link:<br/><code>{reset_link}</code></p>'
+        f"<p>If you didn't request this, you can safely ignore this email.</p>"
+    )
+
+    sent = await asyncio.to_thread(
+        send_email, payload.email, "SpendWise — Reset your password", html
+    )
+
+    if sent:
+        return generic
+
+    # Dev fallback: expose the link only when no SMTP is configured.
+    if not email_configured():
+        return {**generic, "dev_link": reset_link}
+    return generic
+
+
+@app.post("/reset-password")
+async def reset_password(payload: ResetPassword):
+    try:
+        decoded = jwt.decode(
+            payload.token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM],
+        )
+    except JWTError:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired reset link",
+        )
+
+    if decoded.get("purpose") != "password_reset":
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+
+    email = decoded.get("sub")
+    if not email:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+
+    user = await db.user.find_unique(
+        where={"email": email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+
+    await db.user.update(
+        where={"id": user.id},
+        data={"hashed_password": hash_password(payload.new_password)},
+    )
+
+    return {"message": "Password updated successfully"}
+
+
+# =========================
 # EXPENSE ROUTES
 # =========================
 
@@ -442,6 +578,222 @@ async def get_ai_insights(
     )
 
     return {"insights": insights}
+
+
+# =========================
+# CHAT ROUTES
+# =========================
+
+async def load_financial_context(user_id: int):
+    """Load expenses, current-month budget progress, and recurring expenses."""
+    await process_due_recurring_expenses(user_id)
+
+    expenses = await db.query_raw(
+        'SELECT * FROM "Expense" WHERE user_id = $1 ORDER BY created_at DESC',
+        user_id
+    )
+
+    budgets = await db.query_raw(
+        'SELECT * FROM "Budget" WHERE user_id = $1 ORDER BY created_at DESC',
+        user_id
+    )
+
+    latest_by_category = {}
+    for b in budgets:
+        key = b["category"].lower()
+        if key not in latest_by_category:
+            latest_by_category[key] = b
+
+    month = current_month()
+    budget_progress = []
+    for budget in latest_by_category.values():
+        category = budget["category"]
+
+        category_expenses = await db.query_raw(
+            '''
+            SELECT *
+            FROM "Expense"
+            WHERE user_id = $1
+            AND LOWER(category) = LOWER($2)
+            AND created_at >= to_date($3, 'YYYY-MM')
+            AND created_at < (to_date($3, 'YYYY-MM') + interval '1 month')
+            ''',
+            user_id,
+            category,
+            month
+        )
+
+        spent = sum(e["amount"] for e in category_expenses)
+        limit_amount = budget["limit"]
+        percentage = (spent / limit_amount) * 100 if limit_amount > 0 else 0
+
+        budget_progress.append({
+            "category": category,
+            "month": month,
+            "limit": limit_amount,
+            "spent": round(spent, 2),
+            "percentage": round(percentage, 1),
+        })
+
+    recurring = await db.query_raw(
+        'SELECT * FROM "RecurringExpense" WHERE user_id = $1',
+        user_id
+    )
+
+    return expenses, budget_progress, recurring
+
+
+def sse_frame(event_type: str, data: dict) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+
+
+@app.get("/chat/history")
+async def get_chat_history(
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    messages = await db.query_raw(
+        '''
+        SELECT role, content
+        FROM "ChatMessage"
+        WHERE user_id = $1
+        ORDER BY created_at ASC, id ASC
+        ''',
+        user.id
+    )
+
+    return messages[-100:]
+
+
+@app.delete("/chat/history")
+async def clear_chat_history(
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    await db.execute_raw(
+        'DELETE FROM "ChatMessage" WHERE user_id = $1',
+        user.id
+    )
+
+    return {"success": True}
+
+
+@app.post("/chat/stream")
+async def chat_stream(
+    chat_message: ChatMessage,
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    message = chat_message.message.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+    async def event_stream():
+        # Prior turns only (the current question is passed separately).
+        history = await db.query_raw(
+            '''
+            SELECT role, content
+            FROM "ChatMessage"
+            WHERE user_id = $1
+            ORDER BY created_at ASC, id ASC
+            ''',
+            user.id
+        )
+        history = [{"role": m["role"], "content": m["content"]} for m in history[-16:]]
+
+        expenses, budget_progress, recurring = await load_financial_context(user.id)
+
+        # Persist the user's message immediately.
+        await db.query_raw(
+            '''
+            INSERT INTO "ChatMessage" (user_id, role, content, created_at)
+            VALUES ($1, $2, $3, NOW())
+            ''',
+            user.id,
+            "user",
+            message,
+        )
+
+        full_reply = []
+        try:
+            stream_iter = chat_reply_stream(
+                expenses,
+                budget_progress,
+                recurring,
+                history,
+                message,
+            )
+
+            while True:
+                chunk = await asyncio.to_thread(lambda it=stream_iter: next(it, None))
+                if chunk is None:
+                    break
+                full_reply.append(chunk)
+                yield sse_frame("chunk", {"text": chunk})
+
+            reply_text = "".join(full_reply).strip()
+
+            if reply_text:
+                await db.query_raw(
+                    '''
+                    INSERT INTO "ChatMessage" (user_id, role, content, created_at)
+                    VALUES ($1, $2, $3, NOW())
+                    ''',
+                    user.id,
+                    "assistant",
+                    reply_text,
+                )
+
+            follow_ups = await asyncio.to_thread(
+                generate_follow_ups,
+                expenses,
+                budget_progress,
+                recurring,
+                history,
+                message,
+                reply_text,
+            )
+            yield sse_frame("done", {"follow_ups": follow_ups})
+
+        except Exception as exc:  # noqa: BLE001 - stream errors surface as SSE
+            yield sse_frame(
+                "error",
+                {"message": f"Sorry, I couldn't answer that right now. Error: {exc}"},
+            )
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/expenses")
@@ -692,7 +1044,7 @@ async def get_budgets(
 
 @app.get("/budgets/progress")
 async def get_budget_progress(
-    authorization: str | None = Header(None)
+    authorization: str | None = Header(None, alias="Authorization")
 ):
 
     user_email = get_current_user(
@@ -711,70 +1063,7 @@ async def get_budget_progress(
 
     await process_due_recurring_expenses(user.id)
 
-    budgets = await db.query_raw(
-        '''
-        SELECT *
-        FROM "Budget"
-        WHERE user_id = $1
-        ORDER BY created_at DESC
-        ''',
-        user.id
-    )
-
-    # Budgets are recurring monthly per category: keep only the latest row for
-    # each category and compute progress for the CURRENT month.
-    latest_by_category = {}
-    for b in budgets:
-        key = b["category"].lower()
-        if key not in latest_by_category:
-            latest_by_category[key] = b
-
-    month = current_month()
-    progress_data = []
-
-    for budget in latest_by_category.values():
-
-        category = budget["category"]
-
-        expenses = await db.query_raw(
-            '''
-            SELECT *
-            FROM "Expense"
-            WHERE user_id = $1
-            AND LOWER(category) = LOWER($2)
-            AND created_at >= to_date($3, 'YYYY-MM')
-            AND created_at < (to_date($3, 'YYYY-MM') + interval '1 month')
-            ''',
-            user.id,
-            category,
-            month
-        )
-
-        spent = sum(
-            expense["amount"]
-            for expense in expenses
-        )
-
-        limit_amount = budget["limit"]
-
-        remaining = limit_amount - spent
-
-        percentage = (
-            (spent / limit_amount) * 100
-            if limit_amount > 0 else 0
-        )
-
-        progress_data.append({
-            "id": budget["id"],
-            "category": category,
-            "month": month,
-            "limit": limit_amount,
-            "spent": round(spent, 2),
-            "remaining": round(remaining, 2),
-            "percentage": round(percentage, 1),
-        })
-
-    return progress_data
+    return await compute_budget_progress(db, user.id)
 
 
 @app.put("/budgets/{budget_id}")
@@ -1114,3 +1403,139 @@ async def delete_recurring_expense(
     )
 
     return {"message": "Recurring expense deleted successfully"}
+
+
+# =====================
+# NOTIFICATION ROUTES
+# =====================
+
+@app.get("/digest")
+async def get_digest(
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    return await get_or_create_weekly_digest(db, user.id)
+
+
+@app.get("/notifications")
+async def get_notifications(
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    await process_due_recurring_expenses(user.id)
+    await check_and_create(db, user.id)
+
+    notifications = await db.query_raw(
+        '''
+        SELECT *
+        FROM "Notification"
+        WHERE user_id = $1
+        ORDER BY created_at DESC, id DESC
+        ''',
+        user.id
+    )
+
+    unread_count = sum(1 for n in notifications if not n["read"])
+
+    return {
+        "notifications": notifications,
+        "unread_count": unread_count,
+    }
+
+
+@app.get("/notifications/unread-count")
+async def get_unread_notifications_count(
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    await process_due_recurring_expenses(user.id)
+    await check_and_create(db, user.id)
+
+    result = await db.query_raw(
+        '''
+        SELECT COUNT(*)::int AS count
+        FROM "Notification"
+        WHERE user_id = $1 AND read = false
+        ''',
+        user.id
+    )
+
+    return {"count": result[0]["count"]}
+
+
+@app.put("/notifications/{notification_id}/read")
+async def mark_notification_read(
+    notification_id: int,
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    existing = await db.query_raw(
+        'SELECT * FROM "Notification" WHERE id = $1',
+        notification_id
+    )
+
+    if not existing:
+        raise HTTPException(status_code=404, detail="Notification not found")
+
+    if existing[0]["user_id"] != user.id:
+        raise HTTPException(status_code=403, detail="Unauthorized: This notification does not belong to you")
+
+    await db.execute_raw(
+        'UPDATE "Notification" SET "read" = true WHERE id = $1',
+        notification_id
+    )
+
+    return {"success": True}
+
+
+@app.put("/notifications/read-all")
+async def mark_all_notifications_read(
+    authorization: str | None = Header(None, alias="Authorization")
+):
+    user_email = get_current_user(authorization)
+
+    user = await db.user.find_unique(
+        where={"email": user_email}
+    )
+
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+
+    await db.execute_raw(
+        'UPDATE "Notification" SET "read" = true WHERE user_id = $1',
+        user.id
+    )
+
+    return {"success": True}
