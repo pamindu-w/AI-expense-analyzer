@@ -38,7 +38,8 @@ pip install -r requirements.txt
 ## 4. Generate Prisma client and sync database
 
 ```bash
-prisma py fetch
+mkdir -p .binaries
+prisma py fetch --force
 prisma generate --schema prisma/schema.prisma
 
 # Use DATABASE_URL_UNPOOLED for schema changes when using Neon.
