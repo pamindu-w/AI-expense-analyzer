@@ -38,6 +38,7 @@ pip install -r requirements.txt
 ## 4. Generate Prisma client and sync database
 
 ```bash
+prisma py fetch
 prisma generate --schema prisma/schema.prisma
 
 # Use DATABASE_URL_UNPOOLED for schema changes when using Neon.
@@ -85,6 +86,8 @@ If you run frontend on another port, add that origin in `app/main.py`.
 
 - `No module named uvicorn`
   - Use the venv command: `./.venv/bin/python -m uvicorn ...`
+- `Prisma BinaryNotFoundError`
+  - Run `prisma py fetch` during the build before `prisma generate`.
 - `Could not import module "main"`
   - Start Uvicorn from the `backend` directory.
 - `The Client hasn't been generated yet`
