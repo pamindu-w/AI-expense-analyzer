@@ -22,6 +22,7 @@ ENV/
 backend/prisma/*.db
 backend/prisma/*.db-journal
 *.prisma-client-*
+backend/.binaries/
 
 # Environment / secrets
 .env

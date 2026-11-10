@@ -87,7 +87,9 @@ If you run frontend on another port, add that origin in `app/main.py`.
 - `No module named uvicorn`
   - Use the venv command: `./.venv/bin/python -m uvicorn ...`
 - `Prisma BinaryNotFoundError`
-  - Run `prisma py fetch` during the build before `prisma generate`.
+  - Run `prisma py fetch` during the build before `prisma generate`. The
+    project config stores the binaries in the deployable `backend/.binaries`
+    directory instead of Render's non-persistent home cache.
 - `Could not import module "main"`
   - Start Uvicorn from the `backend` directory.
 - `The Client hasn't been generated yet`
