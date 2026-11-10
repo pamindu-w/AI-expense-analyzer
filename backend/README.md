@@ -2,11 +2,14 @@
 
 This backend is a FastAPI app with Prisma (Python client) and PostgreSQL.
 
+When using Neon, the Neon CLI-generated project-root `.env.local` is loaded
+automatically and takes precedence for `DATABASE_URL`.
+
 ## 1. Prerequisites
 
 - Python 3.11+ (3.14 is also fine)
-- PostgreSQL running locally on `localhost:5432`
-- A valid `DATABASE_URL` in `.env`
+- A Neon PostgreSQL project, or another PostgreSQL database
+- A valid `DATABASE_URL`
 
 Example `.env` value:
 
@@ -16,25 +19,30 @@ DATABASE_URL=postgresql://<user>:<password>@localhost:5432/expense_analizer
 
 ## 2. Create and activate virtual environment
 
-From the `backend` folder:
+From the `backend` folder on Windows:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
+py -3.12 -m venv .venv
+.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 ```
+
+On macOS/Linux, use `python3 -m venv .venv` and `source .venv/bin/activate`.
 
 ## 3. Install Python dependencies
 
 ```bash
-pip install uvicorn fastapi prisma python-dotenv passlib python-jose email-validator
+pip install -r requirements.txt
 ```
 
 ## 4. Generate Prisma client and sync database
 
 ```bash
-./.venv/bin/prisma generate
-./.venv/bin/prisma db push
+prisma generate --schema prisma/schema.prisma
+
+# Use DATABASE_URL_UNPOOLED for schema changes when using Neon.
+$env:DATABASE_URL = $env:DATABASE_URL_UNPOOLED
+prisma db push --schema prisma/schema.prisma
 ```
 
 Notes:
@@ -46,11 +54,15 @@ Notes:
 Run from the `backend` folder:
 
 ```bash
-./.venv/bin/python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Backend URL:
 - `http://127.0.0.1:8000`
+
+For Neon, use the pooled `DATABASE_URL` for normal application traffic and
+`DATABASE_URL_UNPOOLED` for Prisma schema changes. The Neon CLI-generated
+project-root `.env.local` is loaded automatically by the backend.
 
 Health check:
 

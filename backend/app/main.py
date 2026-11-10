@@ -7,10 +7,13 @@ import os
 import json
 import logging
 
-# Load environment variables (DATABASE_URL) before importing Prisma
-# Load .env from the backend folder so DATABASE_URL is available
-dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-load_dotenv(dotenv_path)
+# Load environment variables (DATABASE_URL) before importing Prisma.
+# Neon CLI writes the deployed connection string to the project-root
+# `.env.local`; keep backend/.env as a local fallback for other settings.
+backend_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+project_dir = os.path.abspath(os.path.join(backend_dir, '..'))
+load_dotenv(os.path.join(backend_dir, '.env'))
+load_dotenv(os.path.join(project_dir, '.env.local'), override=True)
 
 from prisma import Prisma
 import asyncio
@@ -30,6 +33,13 @@ app = FastAPI()
 # logger for debugging incoming headers
 logger = logging.getLogger("uvicorn.error")
 
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+
+
+@app.get("/")
+async def health_check():
+    return {"message": "Backend connected successfully"}
+
 
 
 # =========================
@@ -41,8 +51,11 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
+        FRONTEND_URL,
     ],
     allow_credentials=True,
     allow_methods=[
@@ -79,7 +92,6 @@ SECRET_KEY = os.getenv("SECRET_KEY", "SECRET123")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60*24
 RESET_TOKEN_EXPIRE_MINUTES = 30
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 pwd_context = CryptContext(
     schemes=["pbkdf2_sha256"],

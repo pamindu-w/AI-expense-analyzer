@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+prisma
+python-dotenv
+passlib
+python-jose
+email-validator
+google-genai
+pypdf
+python-multipart
