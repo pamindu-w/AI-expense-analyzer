@@ -33,7 +33,8 @@ app = FastAPI()
 # logger for debugging incoming headers
 logger = logging.getLogger("uvicorn.error")
 
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173").strip().rstrip("/")
+PRODUCTION_FRONTEND_URL = "https://ai-expense-analyzer-inky.vercel.app"
 
 
 @app.get("/")
@@ -56,6 +57,7 @@ app.add_middleware(
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         FRONTEND_URL,
+        PRODUCTION_FRONTEND_URL,
     ],
     allow_credentials=True,
     allow_methods=[
